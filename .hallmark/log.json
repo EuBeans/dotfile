@@ -1,0 +1,14 @@
+[
+  {
+    "date": "2026-09-18",
+    "scope": "app",
+    "macrostructure": "Workbench",
+    "theme": "Existing Quickshell Theme palette",
+    "designSystem": "design.md",
+    "enrichment": "none",
+    "brief": "Sequential native UI polish of nine Home tabs; compact theme-bound icon/value graph legends",
+    "tabs": ["Home", "Audio", "Displays", "Network", "System", "Power", "Weather", "Notifications", "Settings"],
+    "verification": "Native Qt tests and screenshots at 320/375/414/768; live Quickshell unverified",
+    "critique": {"philosophy": 5, "hierarchy": 4, "execution": 4, "specificity": 5, "restraint": 5, "variety": 4}
+  }
+]

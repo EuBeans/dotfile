@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.artifacts/
+.env
+.env.*
+!.env.example
+*.pem
+*.key

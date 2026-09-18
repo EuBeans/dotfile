@@ -1,0 +1,13 @@
+{
+  "date": "2026-09-18",
+  "framework": "Native QtQuick/QML; PySide6 preview; Quickshell target",
+  "fonts": {"display": "Monocraft", "text": "JetBrains Mono", "source": "shell/Components/Theme.qml"},
+  "palette": "Existing named Theme.qml palette tokens",
+  "spacing": "Existing 4-point rhythm",
+  "motion": "Existing stepped/smooth/off modes and reduced-motion preference",
+  "genre": "modern-minimal",
+  "structure": "Workbench",
+  "designSystem": "design.md",
+  "preserve": ["theme", "fonts", "icon-only navigation", "native framework", "service guards"],
+  "scope": "Sequential polish of nine remaining Home tabs"
+}
