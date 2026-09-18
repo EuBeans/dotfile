@@ -2,6 +2,8 @@
 
 An original Quickshell/QML shell for Hyprland on CachyOS. Current status: an isolated native WSL preview, not a deployed desktop shell.
 
+Track remaining implementation and real-machine verification in the [CachyOS rollout checklist](docs/cachyos-rollout.md).
+
 ## New Machine Setup
 
 **Start with the native preview. Chezmoi is optional.** This repository is application source plus a few optional dotfiles, not a ready-to-apply chezmoi repository. It does not install Hyprland, configure your monitors, replace your bar, provide a secure lock screen, or create a login session. Even the Quickshell entry point currently opens a `FloatingWindow` preview, not desktop layer-shell panels.
@@ -14,7 +16,7 @@ An original Quickshell/QML shell for Hyprland on CachyOS. Current status: an iso
 | Manage dotfiles across machines | Optional chezmoi and a separate dotfiles repository |
 | Terminal appearance | Optional Kitty, Fastfetch and system-installed JetBrains Mono |
 
-The UI fonts and icons are bundled. Node.js, npm, Docker, vLLM and a system-wide PySide6 installation are **not required**. Python/uv are development-preview tools, not a requirement for the Quickshell host. There is no validated minimum Quickshell version yet; target-machine compatibility remains to be checked.
+The UI fonts and icons are bundled. Node.js, npm, Docker, vLLM and a system-wide PySide6 installation are **not required**. Python/uv run the development preview and the optional wallpaper-color helper. The Quickshell host can use saved themes without that helper. There is no validated minimum Quickshell version yet; target-machine compatibility remains to be checked.
 
 ### 1. Get The Source
 
@@ -59,6 +61,7 @@ Only do this on the actual CachyOS/Hyprland machine. First ensure Hyprland itsel
 | Batteries | `upower` | Device batteries appear only when the hardware/service exposes them |
 | NVIDIA metrics | Matching NVIDIA driver/userspace tools providing `nvidia-smi` | Follow CachyOS guidance for your GPU and kernel; do not substitute a generic driver command |
 | Screenshots | `grim imagemagick wl-clipboard`, plus separate HyprQuickshot configuration | See [HyprQuickshot](#hyprquickshot) below |
+| Workspace overview | Hyprland, Quickshell and the pinned `quickshell-overview` submodule | Live previews and drag-and-drop; see [setup and Super+Tab bindings](docs/overview.md) |
 
 Example collector packages, after deciding which services you use:
 
@@ -159,10 +162,13 @@ For a Git checkout, close the running instance before an update:
 cd "$HOME/repositories/quickshell"
 git status --short
 git pull --ff-only
+git submodule update --init --recursive
 uv sync --locked
 ```
 
-Preserve local edits before pulling. `uv sync` is only needed for the Python preview. Never copy a virtual environment between machines; rebuild it from the lockfile.
+Preserve local edits before pulling. `uv sync` is needed for the Python preview and optional wallpaper-color extraction. Never copy a virtual environment between machines; rebuild it from the lockfile.
+
+The bottom bar's workspace-overview button uses the real [Shanu-Kumawat/quickshell-overview](https://github.com/Shanu-Kumawat/quickshell-overview) module, pinned under [third_party/quickshell-overview](third_party/quickshell-overview). Follow [Workspace Overview](docs/overview.md) to enable its standalone Hyprland process, Super+Tab binding and optional `QUICKSHELL_ENABLE_HOST_OVERVIEW=1` shell action. It is unavailable in the native preview; the tile manager remains separate.
 
 To roll back, close the preview and restore your backed-up preferences or optional config includes. Stopping the process does **not** undo explicit live audio/network/power actions, or a display mode you confirmed; restore those through their owning tools. There is no installed desktop session to remove. Remove any autostart/include entries you added yourself before removing the checkout. With chezmoi, stop managing a file using `chezmoi forget PATH` before deleting the local file, otherwise a later apply can recreate it.
 
@@ -201,13 +207,15 @@ QML saves reload the window and reset fixtures. Close the window or press Ctrl+C
 - Profile switching is immediate when AI is idle or the destination keeps AI unchanged. Active requests affected by an AI policy change still offer wait/cancel-request/leave-AI-unchanged choices; an in-progress AI transition blocks application. Existing windows are not relocated by switching rules. AI transitions, failures and VRAM changes are simulated, not measured.
 - System Summary supports dragging, pinning and tiling through Tile Manager. Its artwork/facts layout separates configured hardware from unavailable or synthetic telemetry.
 - Home Audio and the standalone mixer share preview output/input selection, volume/mute and application mixing. These controls are inert fixtures in the native host. GPU and AI retain their dedicated bar controls.
-- System uses exactly four multi-series plots: CPU, Memory, GPU and Network. All GPUs share one plot. Every legend is a compact horizontal row of icons and values, with full details in keyboard-accessible tooltips. Lines use active-theme tones and dash patterns, not a fixed rainbow palette. Missing/stale measurements remain unavailable. System information, resources, GPU compute processes and storage follow the plots.
+- System uses CPU, Memory, one multi-series plot per GPU, and Network graphs. Each GPU is identified independently and shows usage, VRAM, temperature and power; no detected GPUs produces one unavailable placeholder. Every legend is a compact horizontal row of icons and values, with full details in keyboard-accessible tooltips. Lines use active-theme tones and dash patterns, not a fixed rainbow palette. Missing/stale measurements remain unavailable. System information, resources, GPU compute processes and storage follow the plots.
 - Displays, Network and Power distinguish unavailable, read-only and pending states. Weather includes current/hourly/daily layouts and coordinate validation, but its provider is not connected. Notification history is session-only and grouped Today, Yesterday and Older, with confirmation before clearing.
 - Settings > Desktop includes tiling mode, main-pane width, window borders, and inner/outer gaps. Numeric appearance and layout controls support slider dragging, keyboard steps, and typed values.
 - Settings includes category/keyword search, grouped navigation, responsive label/control rows and a persistent profile Save/Revert strip. Shared control outlines account for ancestor scaling so borders remain visible in the fit-to-window preview.
 - Volume and Wallpaper remain on the right bar, opening standalone panels that share state with Home. Wallpaper includes palette controls, bundled images, and a native folder chooser for local images.
+- Choose **Wallpaper** as the color source in the wallpaper panel to generate a monochrome-style theme from the selected image. Extraction uses the pinned third-party `material-color-utilities` Python binding (0.2.4), not average-RGB sampling. Its dominant-color quantizer and HCT tonal palettes produce one restrained hue across the theme; grayscale wallpapers stay neutral. Processing is local, asynchronous and does not modify the image, terminal colors or other apps. Choose **Saved** to return to the named palette. Run `uv sync --locked` on the target to provide `.venv/bin/python` for the Quickshell helper; missing/invalid images fall back to the saved palette. Restart an already-running preview once after this backend update. The native preview integration is tested; the Quickshell process adapter remains unverified here.
 - The clock opens the calendar. The bot icon opens local AI: mock vLLM status, model selection, start/stop/switch, per-GPU VRAM/utilization and output tok/s. Stop/switch require confirmation.
 - The preview toolbar's search icon opens the fixture app launcher. Its shortcut is initially unassigned and can be configured in Settings > Shortcuts.
+- The launcher uses a search-first layout with attached Apps, Run, Files and Windows tabs, inspired by the [4rtemis-4rrow Rofi reference](https://github.com/4rtemis-4rrow/dotfiles). Compact rows, pinned/recent apps and selection highlights follow the active shell theme. Arrow keys select results; Enter activates; Escape closes; Ctrl+Tab cycles modes. Apps and Windows operate on preview fixtures. Run only reports the command without executing it; Files shows an unavailable state until a file provider is connected.
 - Alt-Tab opens a focus-only switcher: repeat Tab to cycle, Shift-Tab to reverse, release Alt to focus, Escape to cancel. The circular-arrows toolbar icon opens the same switcher if the host desktop intercepts Alt-Tab.
 - The separate panels icon opens Tile Manager: search windows, focus/close, move between fixture displays/workspaces, choose tile order, float, and save conditional app-slot rules. Closed apps reserve no empty space.
 - The clipboard icon opens separate text/image history fixtures with search, pinning, simulated copy, deletion and confirmed clear-unpinned.
@@ -240,7 +248,7 @@ On a compatible Quickshell installation, the same views can be loaded through th
 quickshell -p preview/shell.qml
 ```
 
-Quickshell is not installed here, so that host is unverified. Python/PySide6 is development tooling only; production remains Quickshell. No desktop configuration is installed or replaced.
+Quickshell is not installed here, so that host is unverified. The UI remains Quickshell; Python/PySide6 support the native preview and optional wallpaper-color helper. No desktop configuration is installed or replaced.
 
 The experimental Home adapter is opt-in: `QUICKSHELL_LIVE_SERVICES=1` enables collection; `QUICKSHELL_HOST_CONTROLS=1` also permits explicit service actions. It uses Bash/jq, procfs, optional NVIDIA tools, Hyprland, pactl, NetworkManager, powerprofilesctl and UPower. Native PySide preview never loads this adapter. Display confirmation has a 15-second in-process rollback timer, not crash-safe recovery. Wi-Fi scan/saved-network collection and weather-provider integration remain unfinished. `QUICKSHELL_NOTIFICATIONS=1` additionally enables a notification server; do not enable it alongside another notification daemon. These target integrations require CachyOS/Hyprland validation before everyday use.
 

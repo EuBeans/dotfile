@@ -10,6 +10,7 @@ Item {
     readonly property var actions: [
         {key: "launcher", label: "App launcher", sequence: ""},
         {key: "windows", label: "Tile manager", sequence: ""},
+        {key: "workspaceOverview", label: "Workspace overview", sequence: ""},
         {key: "clipboard", label: "Clipboard history", sequence: ""},
         {key: "capture", label: "Screenshot manager", sequence: ""},
         {key: "summary", label: "System summary", sequence: ""},

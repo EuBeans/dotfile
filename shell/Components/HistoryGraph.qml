@@ -20,7 +20,7 @@ ColumnLayout {
     spacing: 8
     RowLayout {
         Layout.fillWidth: true
-        Label { text: graph.title; Layout.fillWidth: true; Layout.minimumWidth: 0; font.family: Theme.displayFont; font.pixelSize: 14 }
+        Label { text: graph.title; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.WrapAnywhere; font.family: Theme.displayFont; font.pixelSize: 14 }
         Label { text: graph.current ? "Live" : "Unavailable"; color: Theme.muted; font.pixelSize: 10 }
     }
     Canvas {

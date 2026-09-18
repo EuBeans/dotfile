@@ -78,8 +78,9 @@ QtObject {
     readonly property var selectedWallpaper: wallpapers[wallpaper] || bundledWallpapers[profileSettings.currentProfile.wallpaper]
     function setWallpaper(index) {
         if (!Number.isInteger(index) || index < 0 || index >= wallpapers.length) return;
-        profileSettings.selectWallpaper(index < bundledWallpapers.length ? index : profileSettings.currentProfile.wallpaper,
-                                        index < bundledWallpapers.length ? "" : String(wallpapers[index].source));
+        const legacyWallpaper = index < 3;
+        profileSettings.selectWallpaper(legacyWallpaper ? index : profileSettings.currentProfile.wallpaper,
+                        legacyWallpaper ? "" : String(wallpapers[index].source));
         notify("Wallpaper changed", wallpapers[index].name);
     }
     property ListModel notifications: ListModel { objectName: "notifications" }
@@ -230,7 +231,27 @@ QtObject {
         {name: "01 - Fold", source: Qt.resolvedUrl("../shell/Assets/Wallpapers/fold.png")},
         {name: "02 - Orbit", source: Qt.resolvedUrl("../shell/Assets/Wallpapers/orbit.png")},
         {name: "03 - Steps", source: Qt.resolvedUrl("../shell/Assets/Wallpapers/steps.png")}
-    ]
+    ].concat([
+        "Abstract Fold - Amber - original.jpg",
+        "Abstract Fold - Teal - original.jpg",
+        "Butter - Golden Shore - normal.jpg",
+        "Butter - Golden Shore - superwide.jpg",
+        "Butter - Golden Shore - wide.jpg",
+        "Chalk - Moonlit Mountains - normal.jpg",
+        "Chalk - Moonlit Mountains - superwide.jpg",
+        "Chalk - Moonlit Mountains - wide.jpg",
+        "Ice - Blue Layers - normal.jpg",
+        "Ice - Blue Layers - superwide.jpg",
+        "Ice - Blue Layers - wide.jpg",
+        "Phosphor - Green Valley - normal.jpg",
+        "Phosphor - Green Valley - superwide.jpg",
+        "Phosphor - Green Valley - wide.jpg",
+        "Rose - Rose Dunes - normal.jpg",
+        "Rose - Rose Dunes - superwide.jpg",
+        "Rose - Rose Dunes - wide.jpg",
+        "Moonlit Mountains - original.jpg",
+        "Pixel Planet - original.jpg"
+    ].map(file => ({name: file.replace(/\.jpg$/, ""), source: Qt.resolvedUrl("../shell/Assets/Wallpapers/" + file)})))
     readonly property date calendarDate: new Date(2026, 8, 18, 10, 24)
     readonly property string clock: Qt.formatDateTime(calendarDate, "HH:mm")
     readonly property string date: Qt.formatDateTime(calendarDate, "ddd dd MMM").toUpperCase()

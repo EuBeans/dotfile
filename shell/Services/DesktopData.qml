@@ -56,10 +56,11 @@ QtObject {
             {key:"swap", title:"Swap", value:memory.SwapTotal > 0 ? 100 * (memory.SwapTotal-memory.SwapFree)/memory.SwapTotal : 0, unit:"%", maximum:100}
         ];
         for (const gpu of sample.gpus) {
-            next.push({key:gpu.id+"usage",title:gpu.name+" / Usage",value:gpu.utilization,unit:"%",maximum:100});
-            next.push({key:gpu.id+"vram",title:gpu.name+" / VRAM",value:gpu.usedMiB,unit:" MiB",maximum:gpu.totalMiB || 1});
-            next.push({key:gpu.id+"temp",title:gpu.name+" / Temperature",value:gpu.temperature,unit:" C",maximum:110});
-            next.push({key:gpu.id+"power",title:gpu.name+" / Power",value:gpu.power,unit:" W",maximum:Math.max(100,gpu.power || 0)});
+            const device = {gpuId:String(gpu.id),gpuName:gpu.name};
+            next.push(Object.assign({},device,{key:gpu.id+"usage",title:gpu.name+" / Usage",value:gpu.utilization,unit:"%",maximum:100}));
+            next.push(Object.assign({},device,{key:gpu.id+"vram",title:gpu.name+" / VRAM",value:gpu.usedMiB,unit:" MiB",maximum:gpu.totalMiB || 1}));
+            next.push(Object.assign({},device,{key:gpu.id+"temp",title:gpu.name+" / Temperature",value:gpu.temperature,unit:" C",maximum:110}));
+            next.push(Object.assign({},device,{key:gpu.id+"power",title:gpu.name+" / Power",value:gpu.power,unit:" W",maximum:Math.max(100,gpu.power || 0)}));
         }
         if (!sample.gpus.length) {
             next.push({key:"gpu",title:"GPU usage",value:null,unit:"%",maximum:100});

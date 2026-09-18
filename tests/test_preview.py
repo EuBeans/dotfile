@@ -13,6 +13,7 @@ from PySide6.QtGui import QAccessible, QColor, QGuiApplication, QImage, QKeyEven
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
+from tools.wallpaper_palette import attach_palette_backend
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,12 +36,14 @@ class PreviewTests(unittest.TestCase):
         self.engine.load(QUrl.fromLocalFile(str(ROOT / "preview" / "QtHost.qml")))
         self.assertTrue(self.engine.rootObjects(), "QML host failed to load")
         self.window = self.engine.rootObjects()[0]
+        self.palette_backend = attach_palette_backend(self.engine)
         self.settings_window = self.window.findChild(QObject, "settingsWindow")
         QTest.qWait(100)
         self.studio = self.item("studio")
         self.fixtures = self.window.findChild(QObject, "fixtures")
 
     def tearDown(self):
+        self.palette_backend.stop()
         self.settings_window.close()
         self.window.close()
         self.engine.deleteLater()
@@ -435,6 +438,34 @@ class PreviewTests(unittest.TestCase):
         sample = widgets.property("sample")
         QTest.qWait(1100)
         self.assertEqual(widgets.property("sample"), sample)
+
+    def test_workspace_overview_handoff_is_inert_in_preview(self):
+        self.fixtures.setProperty("reducedMotion", True)
+        self.fixtures.setProperty("dndEnabled", False)
+        requests = []
+        self.studio.workspaceOverviewRequested.connect(lambda: requests.append(True))
+        manager = self.window.findChild(QObject, "windowManager")
+        windows_before = manager.property("windows").toVariant()
+        self.item("desktop").setProperty("openPanel", "launcher")
+        self.click("bottomOverview")
+        self.assertEqual(requests, [True])
+        self.assertEqual(self.item("desktop").property("openPanel"), "")
+        notification = self.fixtures.property("currentNotification").toVariant()
+        self.assertEqual(notification["title"], "Workspace overview")
+        self.assertEqual(notification["message"], "Requires Quickshell and a Hyprland session")
+        shortcuts = self.window.findChild(QObject, "shortcutSettings")
+        shortcuts.activated.emit("workspaceOverview")
+        QTest.qWait(30)
+        self.assertEqual(requests, [True, True])
+        self.assertEqual(manager.property("windows").toVariant(), windows_before)
+        for width in (320, 375, 414, 768):
+            self.studio.setProperty("customWidth", width)
+            QTest.qWait(50)
+            bar = self.item("bottomBar")
+            button = self.item("bottomOverview")
+            self.assertGreaterEqual(button.mapToItem(bar, QPointF()).x(), 0)
+            self.assertLessEqual(button.mapToItem(bar, QPointF(button.width(), 0)).x(), bar.width())
+        self.capture("workspace-overview-preview-unavailable")
 
     def test_capture_hyprquickshot_handoff_is_inert_in_preview(self):
         self.fixtures.setProperty("reducedMotion", True)
@@ -1033,7 +1064,7 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(result.toVariant(), [None, 75, 2, 1])
         self.home_action("homeSystemSummary")
         groups = self.item("homeSystemPage").property("graphGroups").toVariant()
-        self.assertEqual([group["key"] for group in groups], ["cpu", "memory", "gpu", "network"])
+        self.assertEqual([group["key"] for group in groups], ["cpu", "memory", "gpu:gpu0", "network"])
         self.assertEqual([len(group["series"]) for group in groups], [2, 2, 4, 2])
         self.assertEqual(groups[3]["series"][0]["maximum"], groups[3]["series"][1]["maximum"])
         result = self.engine.evaluate('''
@@ -1043,8 +1074,32 @@ class PreviewTests(unittest.TestCase):
         ''')
         self.assertFalse(result.isError(), result.toString())
         groups = self.item("homeSystemPage").property("graphGroups").toVariant()
-        self.assertEqual(len(groups), 4)
-        self.assertEqual(len(groups[2]["series"]), 8)
+        self.assertEqual([group["key"] for group in groups], ["cpu", "memory", "gpu:gpu0", "gpu:gpu1", "network"])
+        self.assertEqual([len(group["series"]) for group in groups], [2, 2, 4, 4, 2])
+        self.assertEqual(groups[2]["title"], "GPU 0 / Test GPU")
+        self.assertEqual(groups[3]["title"], "GPU 1 / Second GPU")
+        self.assertTrue(all(entry["key"].startswith("gpu0") for entry in groups[2]["series"]))
+        self.assertTrue(all(entry["key"].startswith("gpu1") for entry in groups[3]["series"]))
+        result = self.engine.evaluate('''
+            var reordered = JSON.parse(JSON.stringify(sample));
+            reordered.gpus.reverse();
+            reordered.gpus.forEach(gpu => gpu.name = "Identical GPU");
+            data.ingest(reordered,start+3100);
+        ''')
+        self.assertFalse(result.isError(), result.toString())
+        groups = self.item("homeSystemPage").property("graphGroups").toVariant()
+        self.assertEqual([group["key"] for group in groups[2:4]], ["gpu:gpu1", "gpu:gpu0"])
+        self.assertEqual(groups[2]["series"][0]["samples"], [25, 25])
+        self.assertEqual(groups[3]["series"][0]["samples"], [40, 40, 40, 40])
+        self.engine.evaluate('reordered.gpus = reordered.gpus.slice(0,1); data.ingest(reordered,start+3200)')
+        groups = self.item("homeSystemPage").property("graphGroups").toVariant()
+        self.assertEqual([group["key"] for group in groups], ["cpu", "memory", "gpu:gpu1", "network"])
+        self.engine.evaluate('reordered.gpus = []; data.ingest(reordered,start+3300)')
+        groups = self.item("homeSystemPage").property("graphGroups").toVariant()
+        self.assertEqual(groups[2]["key"], "gpu")
+        self.assertEqual(len(groups[2]["series"]), 4)
+        self.assertTrue(all(not entry["current"] for entry in groups[2]["series"]))
+        self.engine.evaluate('data.ingest(sample,start+3400)')
         for width in (320, 768):
             self.studio.setProperty("customWidth", width)
             for trigger in ("homeAudio", "homeDisplayTab", "homeSystemSummary", "homePowerTab", "homeNetworkTab", "homeNotificationsTab"):
@@ -1209,6 +1264,8 @@ class PreviewTests(unittest.TestCase):
                 for (const [suffix,title,unit,maximum] of [["usage","Usage","%",100],["vram","VRAM"," MiB",32768],["temp","Temperature"," C",110],["power","Power"," W",450]]) {
                     systemData.metrics = systemData.metrics.concat([{
                         key:"gpu"+gpu+suffix,
+                        gpuId:"gpu"+gpu,
+                        gpuName:"NVIDIA workstation accelerator with a very long device name "+gpu,
                         title:"NVIDIA workstation accelerator with a very long device name "+gpu+" / "+title,
                         value:maximum/2,unit:unit,maximum:maximum
                     }]);
@@ -1275,9 +1332,9 @@ class PreviewTests(unittest.TestCase):
                 self.studio.setProperty("customWidth", width)
                 QTest.qWait(60)
                 groups = page.property("graphGroups").toVariant()
-                self.assertEqual([group["key"] for group in groups], ["cpu", "memory", "gpu", "network"])
-                self.assertEqual([len(group["series"]) for group in groups], [2, 2, 8, 2])
-                self.assertEqual([entry["maximum"] for entry in groups[3]["series"]], [1024, 1024])
+                self.assertEqual([group["key"] for group in groups], ["cpu", "memory", "gpu:gpu0", "gpu:gpu1", "network"])
+                self.assertEqual([len(group["series"]) for group in groups], [2, 2, 4, 4, 2])
+                self.assertEqual([entry["maximum"] for entry in groups[4]["series"]], [1024, 1024])
                 pending = [page]
                 plots = []
                 while pending:
@@ -1296,7 +1353,7 @@ class PreviewTests(unittest.TestCase):
                         continue
                     self.assertGreaterEqual(item.mapToItem(page, QPointF(0, 0)).x(), -1)
                     self.assertLessEqual(item.mapToItem(page, QPointF(item.width(), 0)).x(), page.width() + 1)
-                self.assertEqual(len(plots), 4)
+                self.assertEqual(len(plots), 5)
                 for group in groups:
                     graph = self.item("resourceGraph" + group["key"], page)
                     self.engine.globalObject().setProperty("systemGraph", self.engine.newQObject(graph))
@@ -1380,6 +1437,7 @@ class PreviewTests(unittest.TestCase):
                         self.capture(f"system-compact-focus-{palette}-{group['key']}-{width}")
                         self.item("homeSystemSummary").forceActiveFocus()
                         legend.setProperty("contentX", 0)
+                        reveal(legend)
                         QTest.mouseMove(self.window, icons[0].mapToScene(QPointF(16, 16)).toPoint())
                         QTest.qWait(500)
                         self.assertTrue(icons[0].property("hovered"))
@@ -1390,16 +1448,16 @@ class PreviewTests(unittest.TestCase):
                         self.assertTrue(all(not icon.findChild(QObject, icon.objectName() + "Details").property("visible") for icon in icons))
                         reveal(graph)
                         self.capture(f"system-compact-{palette}-{group['key']}-{width}")
-                    if group["key"] == "gpu":
+                    if group["key"] == "gpu:gpu1":
                         evaluate('systemData.metrics = systemData.metrics.map(entry => entry.key === "gpu1power" ? Object.assign({},entry,{value:null}) : entry)')
                         QTest.qWait(30)
-                        graph = self.item("resourceGraphgpu", page)
+                        graph = self.item("resourceGraphgpu:gpu1", page)
                         image = graph_image(graph)
                         self.assertTrue(graph.property("current"))
                         self.assertEqual(graph.property("series")[-1]["reading"], "--")
-                        self.assertEqual(self.item("resourceGraphgpuLegendIcon7", page).property("text"), "--")
-                        self.assertIn("Unavailable", self.item("resourceGraphgpuLegendIcon7", page).property("description"))
-                        self.assertEqual(color_pixels(image, QColor(colors[-1]), 7), 0)
+                        self.assertEqual(self.item("resourceGraphgpu:gpu1LegendIcon3", page).property("text"), "--")
+                        self.assertIn("Unavailable", self.item("resourceGraphgpu:gpu1LegendIcon3", page).property("description"))
+                        self.assertEqual(color_pixels(image, QColor(colors[-1]), 3), 0)
                         for index, color in enumerate(colors[:-1]):
                             self.assertGreater(color_pixels(image, QColor(color), index), 12)
                         evaluate('systemData.metrics = systemData.metrics.map(entry => entry.key === "gpu1power" ? Object.assign({},entry,{value:225}) : entry)')
@@ -2361,7 +2419,38 @@ class PreviewTests(unittest.TestCase):
                 QTest.qWait(50)
             self.assertEqual(names(), expected)
 
-        bundled = "01 - Fold|02 - Orbit|03 - Steps"
+        bundled = evaluate("wallpaperFixtures.bundledWallpapers.map(entry => entry.name).join('|')").toString()
+        bundled_count = len(bundled.split("|"))
+        self.assertEqual(bundled_count, 22)
+        sources = evaluate("wallpaperFixtures.bundledWallpapers.map(entry => String(entry.source))").toVariant()
+        for source in sources:
+            self.assertFalse(QImage(QUrl(source).toLocalFile()).isNull(), source)
+        self.click("wallpaperButton")
+        grid = self.item("wallpaperGrid")
+        self.engine.globalObject().setProperty("wallpaperTestGrid", self.engine.newQObject(grid))
+        self.engine.globalObject().setProperty("wallpaperTestImage", self.engine.newQObject(self.item("desktopWallpaper")))
+        for index in range(3, bundled_count):
+            evaluate(f"wallpaperTestGrid.positionViewAtIndex({index}, 1)")
+            QTest.qWait(100)
+            self.click("wallpaperTile" + str(index))
+            self.assertEqual(self.fixtures.property("wallpaper"), index)
+            self.assertEqual(profiles.property("currentProfile").toVariant()["wallpaperFile"], sources[index])
+            self.assertEqual(self.item("desktopWallpaper").property("source"), QUrl(sources[index]))
+            self.assertTrue(evaluate("wallpaperTestImage.status === 1").toBool())
+        profiles.save()
+        restored_engine = QQmlApplicationEngine()
+        restored_engine.warnings.connect(lambda messages: self.warnings.extend(str(message) for message in messages))
+        restored_engine.load(QUrl.fromLocalFile(str(ROOT / "preview" / "QtHost.qml")))
+        restored_window = restored_engine.rootObjects()[0]
+        try:
+            QTest.qWait(150)
+            self.assertEqual(restored_window.findChild(QObject, "fixtures").property("wallpaper"), bundled_count - 1)
+        finally:
+            restored_window.close()
+            restored_engine.deleteLater()
+        self.window.requestActivate()
+        evaluate("wallpaperFixtures.setWallpaper(0)")
+        self.item("desktop").setProperty("openPanel", "")
         with tempfile.TemporaryDirectory() as directory:
             first = Path(directory) / "first folder"
             second = Path(directory) / "second folder"
@@ -2375,13 +2464,16 @@ class PreviewTests(unittest.TestCase):
             self.click("wallpaperButton")
             profiles.setWallpaperDirectory(QUrl.fromLocalFile(str(first)).toString())
             await_names(bundled + "|alpha.JPG|zeta.png")
-            self.click("wallpaperTile4")
-            self.assertEqual(self.fixtures.property("wallpaper"), 4)
+            grid = self.item("wallpaperGrid")
+            self.engine.globalObject().setProperty("wallpaperTestGrid", self.engine.newQObject(grid))
+            evaluate(f"wallpaperTestGrid.positionViewAtIndex({bundled_count + 1}, 1)")
+            self.click("wallpaperTile" + str(bundled_count + 1))
+            self.assertEqual(self.fixtures.property("wallpaper"), bundled_count + 1)
             selected_url = QUrl.fromLocalFile(str(first / "zeta.png")).toString()
             self.assertEqual(profiles.property("currentProfile").toVariant()["wallpaperFile"], selected_url)
             self.assertTrue(image.save(str(first / "beta.png")))
             await_names(bundled + "|alpha.JPG|beta.png|zeta.png")
-            self.assertEqual(self.fixtures.property("wallpaper"), 5)
+            self.assertEqual(self.fixtures.property("wallpaper"), bundled_count + 2)
             self.click("wallpaperPaletteRose")
             self.assertEqual(profiles.property("currentProfile").toVariant()["palette"], "Rose")
             self.click("wallpaperSourceWallpaper")
@@ -2389,7 +2481,7 @@ class PreviewTests(unittest.TestCase):
             profiles.setProperty("activeName", "Gaming")
             self.assertEqual(self.fixtures.property("wallpaper"), 1)
             profiles.setProperty("activeName", "Work")
-            self.assertEqual(self.fixtures.property("wallpaper"), 5)
+            self.assertEqual(self.fixtures.property("wallpaper"), bundled_count + 2)
             (first / "beta.png").unlink()
             await_names(bundled + "|alpha.JPG|zeta.png")
             profiles.setWallpaperDirectory(QUrl.fromLocalFile(str(second)).toString())
@@ -2407,7 +2499,7 @@ class PreviewTests(unittest.TestCase):
                 restored = second_window.findChild(QObject, "profileSettings")
                 self.assertEqual(restored.property("wallpaperDirectory"), QUrl.fromLocalFile(str(first)).toString())
                 self.assertEqual(restored.property("currentProfile").toVariant()["wallpaperFile"], selected_url)
-                self.assertEqual(second_window.findChild(QObject, "fixtures").property("wallpaper"), 4)
+                self.assertEqual(second_window.findChild(QObject, "fixtures").property("wallpaper"), bundled_count + 1)
             finally:
                 second_window.close()
                 second_engine.deleteLater()
@@ -2422,6 +2514,127 @@ class PreviewTests(unittest.TestCase):
             await_names(bundled)
             self.assertEqual(self.item("wallpaperFolderStatus").property("text"), "No supported images found in folder")
             profiles.setWallpaperDirectory("")
+
+    def test_launcher_tabs_actions_and_empty_states(self):
+        self.fixtures.setProperty("reducedMotion", True)
+        self.fixtures.setProperty("dndEnabled", True)
+        desktop = self.item("desktop")
+        desktop.setProperty("openPanel", "launcher")
+        QTest.qWait(30)
+        panel = self.item("launcherPanel")
+        search = self.item("launcherSearch")
+        results = self.item("launcherResults")
+        manager = self.window.findChild(QObject, "windowManager")
+        self.engine.globalObject().setProperty("launcherTest", self.engine.newQObject(panel))
+        self.engine.evaluate('var launcherCommand = ""; var launcherFile = ""; launcherTest.runRequested.connect(command => launcherCommand = command); launcherTest.fileRequested.connect(path => launcherFile = path);')
+
+        self.click("launcherTab_Windows")
+        self.assertTrue(search.hasActiveFocus())
+        self.assertEqual(results.property("count"), 3)
+        search.setProperty("text", "preview session")
+        QTest.qWait(30)
+        self.assertEqual(results.property("count"), 1)
+        QTest.keyClick(self.window, Qt.Key.Key_Return)
+        self.assertEqual(manager.property("focusedId"), 2)
+        self.assertEqual(desktop.property("openPanel"), "")
+
+        desktop.setProperty("openPanel", "launcher")
+        QTest.qWait(30)
+        self.assertEqual(panel.property("mode"), "Apps")
+        QTest.keyClick(self.window, Qt.Key.Key_Tab, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(panel.property("mode"), "Run")
+        self.assertEqual(results.property("count"), 0)
+        self.assertEqual(self.item("launcherEmptyState").property("text"), "No command entered")
+        search.setProperty("text", "   printf launcher-preview   ")
+        QTest.qWait(30)
+        self.assertEqual(results.property("count"), 1)
+        QTest.keyClick(self.window, Qt.Key.Key_Return)
+        self.assertEqual(self.engine.evaluate("launcherCommand").toString(), "printf launcher-preview")
+        self.assertEqual(self.fixtures.property("lastLaunchedApp"), "")
+        self.assertEqual(desktop.property("openPanel"), "")
+
+        desktop.setProperty("openPanel", "launcher")
+        QTest.qWait(30)
+        self.click("launcherTab_Files")
+        self.assertEqual(results.property("count"), 0)
+        self.assertEqual(self.item("launcherEmptyState").property("text"), "File search unavailable")
+        QTest.keyClick(self.window, Qt.Key.Key_Return)
+        self.assertEqual(desktop.property("openPanel"), "launcher")
+        self.engine.evaluate('launcherTest.files = Array.from({length: 24}, (_, index) => ({name: "Document " + index, path: "/preview/document-" + index})); launcherTest.fileSearchAvailable = true;')
+        QTest.qWait(30)
+        self.assertEqual(results.property("count"), 24)
+        self.engine.evaluate("launcherTest.moveSelection(23)")
+        QTest.qWait(30)
+        self.assertEqual(results.property("currentIndex"), 23)
+        self.assertGreater(results.property("contentY"), 0)
+        QTest.keyClick(self.window, Qt.Key.Key_Return)
+        self.assertEqual(self.engine.evaluate("launcherFile").toString(), "/preview/document-23")
+        self.assertEqual(desktop.property("openPanel"), "")
+
+        desktop.setProperty("openPanel", "launcher")
+        QTest.qWait(30)
+        self.engine.evaluate('launcherTest.toggleFavorite("browser")')
+        self.assertIn("browser", panel.property("favoriteIds").toVariant())
+        self.item("launcherTab_Apps").forceActiveFocus(Qt.FocusReason.TabFocusReason)
+        QTest.keyClick(self.window, Qt.Key.Key_Left)
+        self.assertEqual(panel.property("mode"), "Windows")
+        self.assertTrue(self.item("launcherTab_Windows").hasActiveFocus())
+        QTest.keyClick(self.window, Qt.Key.Key_Right)
+        self.assertEqual(panel.property("mode"), "Apps")
+        QTest.keyClick(self.window, Qt.Key.Key_Escape)
+        self.assertEqual(desktop.property("openPanel"), "")
+
+    def test_launcher_reference_layout_responsive(self):
+        self.fixtures.setProperty("reducedMotion", True)
+        desktop = self.item("desktop")
+        desktop.setProperty("openPanel", "launcher")
+        QTest.qWait(30)
+        panel = self.item("launcherPanel")
+        search = self.item("launcherSearch")
+        self.engine.globalObject().setProperty("launcherTest", self.engine.newQObject(panel))
+        for width in (320, 375, 414, 768):
+            self.studio.setProperty("customWidth", width)
+            QTest.qWait(40)
+            frame = self.item("launcherResultFrame")
+            tab_strip = self.item("launcherTabs")
+            self.assertLess(search.mapToItem(panel, QPointF(0, search.height())).y(), tab_strip.mapToItem(panel, QPointF(0, 0)).y())
+            tab_widths = []
+            for mode in ("Apps", "Run", "Files", "Windows"):
+                self.click("launcherTab_" + mode)
+                tab = self.item("launcherTab_" + mode)
+                tab_widths.append(tab.width())
+                self.assertTrue(tab.property("checked"))
+                for control in (search, frame, tab, self.item("launcherResults")):
+                    position = control.mapToItem(panel, QPointF(0, 0))
+                    self.assertGreaterEqual(position.x(), 0)
+                    self.assertGreaterEqual(position.y(), 0)
+                    self.assertLessEqual(position.x() + control.width(), panel.width() + 0.5)
+                    self.assertLessEqual(position.y() + control.height(), panel.height() + 0.5)
+                content = tab.property("contentItem")
+                pending = [content]
+                while pending:
+                    child = pending.pop()
+                    pending.extend(child.childItems())
+                    if child.property("text") == mode:
+                        self.assertFalse(child.property("truncated"), mode)
+                        self.assertEqual(child.property("color"), search.property("color"))
+                grab = panel.grabToImage()
+                QTest.qWait(60)
+                image = grab.image()
+                self.assertFalse(image.isNull())
+                folder = ROOT / ".artifacts"
+                folder.mkdir(exist_ok=True)
+                self.assertTrue(image.save(str(folder / f"launcher-tabs-{mode.lower()}-{width}.png")))
+            self.assertLess(max(tab_widths) - min(tab_widths), 0.5)
+            self.click("launcherTab_Run")
+            search.setProperty("text", "very-long-command-" * 20)
+            QTest.qWait(30)
+            label = self.item("launcherResultLabel_0")
+            self.assertEqual(label.property("maximumLineCount"), 1)
+            self.assertTrue(label.property("truncated"))
+            self.assertGreater(label.width(), 0)
+            self.click("clearLauncherSearch")
+            self.click("launcherTab_Apps")
 
     def test_launcher_search_activation_and_shortcut(self):
         self.fixtures.setProperty("reducedMotion", True)
@@ -3884,7 +4097,7 @@ class PreviewTests(unittest.TestCase):
 
         def sample(path):
             sampler.setProperty("source", QUrl.fromLocalFile(str(path)))
-            for attempt in range(30):
+            for attempt in range(100):
                 QTest.qWait(30)
                 palette = sampler.property("palette")
                 if palette is not None and palette.toVariant():
@@ -3912,6 +4125,30 @@ class PreviewTests(unittest.TestCase):
             self.assertEqual(QColor(transparent["accent"]), QColor(red["accent"]))
             self.assertEqual(self.item("barCenter").property("fillColor"), QColor(transparent["ink"]))
             self.assertEqual(self.item("barLeft").property("color"), self.item("barRight").property("color"))
+            from material_color_utilities import Hct, get_contrast_ratio
+            for palette in (red, blue, transparent):
+                self.assertGreaterEqual(get_contrast_ratio(palette["paper"], palette["ink"]), 7)
+                self.assertGreaterEqual(get_contrast_ratio(palette["muted"], palette["hover"]), 4.5)
+                self.assertTrue(all(Hct(value).chroma < 20 for value in palette.values()))
+            neutral_path = Path(directory) / "neutral.png"
+            image.fill(QColor("#808080"))
+            self.assertTrue(image.save(str(neutral_path)))
+            neutral = sample(neutral_path)
+            for token in neutral.values():
+                channels = QColor(token).getRgb()[:3]
+                self.assertLessEqual(max(channels) - min(channels), 2)
+            sampler.setProperty("source", QUrl.fromLocalFile(str(paths["blue"])))
+            sampler.setProperty("source", QUrl.fromLocalFile(str(paths["red"])))
+            QTest.qWait(500)
+            self.assertEqual(sampler.property("palette").toVariant(), red)
+            sampler.setProperty("source", QUrl.fromLocalFile(str(Path(directory) / "missing.png")))
+            for attempt in range(100):
+                QTest.qWait(30)
+                if sampler.property("status") == "Wallpaper colors unavailable":
+                    break
+            self.assertEqual(sampler.property("status"), "Wallpaper colors unavailable")
+            self.assertIsNone(sampler.property("palette"))
+            self.assertEqual(self.item("barCenter").property("fillColor"), QColor("#1c1c1c"))
             self.engine.evaluate('themeProfiles.update("source", "Saved")')
             self.assertEqual(self.item("barCenter").property("fillColor"), QColor("#1c1c1c"))
 
@@ -4292,6 +4529,33 @@ class PreviewTests(unittest.TestCase):
         finally:
             second_window.close()
             second.deleteLater()
+
+    def test_glass_off_panel_corners(self):
+        profiles = self.window.findChild(QObject, "profileSettings")
+        self.fixtures.setProperty("reducedMotion", True)
+        profiles.setProperty("panelRadius", 24)
+        panel = self.item("homePanel")
+        panel.setProperty("page", "Settings")
+        for floating in (False, True):
+            profiles.setProperty("floatingPanels", floating)
+            self.item("desktop").setProperty("openPanel", "")
+            QTest.qWait(100)
+            backdrop = self.window.grabWindow()
+            self.click("controlsButton")
+            for glass in (True, False, True, False):
+                profiles.setProperty("glassEnabled", glass)
+                QTest.qWait(100)
+                rendered = self.window.grabWindow()
+                self.assertEqual(panel.property("radius"), 24)
+                self.assertTrue(panel.property("antialiasing"))
+                for corner in (QPointF(panel.width() - 2, 2),
+                               QPointF(panel.width() - 2, panel.height() - 2)):
+                    point = panel.mapToScene(corner).toPoint()
+                    self.assertEqual(rendered.pixelColor(point), backdrop.pixelColor(point))
+                if not glass:
+                    point = panel.mapToScene(QPointF(panel.width() - 8, panel.height() / 2)).toPoint()
+                    self.assertEqual(rendered.pixelColor(point), panel.property("color"))
+            self.capture("glass-off-corners-" + ("floating" if floating else "attached"))
 
     def test_gap_and_glass_preferences(self):
         self.click("tilingButton")

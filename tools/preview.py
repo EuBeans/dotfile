@@ -6,6 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import QFileSystemWatcher, QTimer, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
+from wallpaper_palette import attach_palette_backend
 
 
 def main() -> int:
@@ -40,6 +41,7 @@ def main() -> int:
     engine.load(QUrl.fromLocalFile(str(source)))
     if not engine.rootObjects():
         return 1
+    palette_backend = attach_palette_backend(engine)
     if args.watch:
         app.setQuitOnLastWindowClosed(False)
         reloading = False
@@ -66,11 +68,12 @@ def main() -> int:
             QTimer.singleShot(0, load_sources)
 
         def load_sources() -> None:
-            nonlocal engine, reloading
+            nonlocal engine, reloading, palette_backend
             engine = QQmlApplicationEngine()
             engine.warnings.connect(lambda messages: warnings.extend(str(message) for message in messages))
             engine.setInitialProperties(initial_properties)
             engine.load(QUrl.fromLocalFile(str(source)))
+            palette_backend = attach_palette_backend(engine)
             watch_sources()
             reloading = False
             if engine.rootObjects():

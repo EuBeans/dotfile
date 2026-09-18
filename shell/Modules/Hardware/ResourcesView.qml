@@ -19,17 +19,25 @@ ScrollView {
     ]
     readonly property var graphGroups: {
         const metrics = data.metrics.length ? data.metrics : emptyMetrics;
-        const groups = [{key:"cpu",title:"CPU",series:[]}, {key:"memory",title:"Memory",series:[]}, {key:"gpu",title:"GPU",series:[]}, {key:"network",title:"Network",series:[]}];
+        const groups = [{key:"cpu",title:"CPU",series:[]}, {key:"memory",title:"Memory",series:[]}];
+        for (const metric of metrics) {
+            if (metric.gpuId !== undefined && !groups.some(group => group.key === "gpu:" + metric.gpuId))
+                groups.push({key:"gpu:" + metric.gpuId,title:"GPU " + (groups.length - 2) + " / " + (metric.gpuName || metric.gpuId),series:[]});
+        }
+        if (groups.length === 2) groups.push({key:"gpu",title:"GPU",series:[]});
+        groups.push({key:"network",title:"Network",series:[]});
         const networkMaximum = Math.max(1, ...metrics.filter(metric => ["download","upload"].includes(metric.key)).map(metric => metric.maximum));
         for (const metric of metrics) {
-            const groupIndex = ["cpu","cpuTemp"].includes(metric.key) ? 0 : ["memory","swap"].includes(metric.key) ? 1 : ["download","upload"].includes(metric.key) ? 3 : 2;
+            const groupKey = ["cpu","cpuTemp"].includes(metric.key) ? "cpu" : ["memory","swap"].includes(metric.key) ? "memory" : ["download","upload"].includes(metric.key) ? "network" : metric.gpuId !== undefined ? "gpu:" + metric.gpuId : "gpu";
+            const group = groups.find(entry => entry.key === groupKey);
+            if (!group) continue;
             const current = data.fresh && typeof metric.value === "number" && Number.isFinite(metric.value);
-            groups[groupIndex].series.push({
+            group.series.push({
                 key:metric.key, title:metric.title, unit:metric.unit, current:current,
                 iconName:({cpu:"cpu",memory:"memory-stick",swap:"refresh-cw",download:"download",upload:"chevron-right"})[metric.key]
                     || ({"%":"activity","MiB":"memory-stick","C":"thermometer","W":"zap"})[metric.unit.trim()] || "activity",
                 reading:current ? data.value(metric.value,metric.unit,1) : "--",
-                samples:data.history[metric.key] || [], maximum:groupIndex === 3 ? networkMaximum : metric.maximum
+                samples:data.history[metric.key] || [], maximum:groupKey === "network" ? networkMaximum : metric.maximum
             });
         }
         return groups;

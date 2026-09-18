@@ -13,6 +13,7 @@ Rectangle {
     required property int selected
     required property var profileSettings
     property bool folderLoading: false
+    property int directoryWallpaperCount: 0
     signal selectedRequested(int index)
     signal closeRequested()
     color: embedded ? Ui.Theme.clear : Ui.Theme.surface
@@ -129,7 +130,7 @@ Rectangle {
         Ui.Label {
             objectName: panel.namePrefix + "wallpaperFolderStatus"
             Layout.fillWidth: true
-            text: panel.folderLoading ? "Loading folder..." : panel.profileSettings.wallpaperDirectory && panel.wallpapers.length === 3 ? "No supported images found in folder" : panel.wallpapers.length + " wallpapers"
+            text: panel.folderLoading ? "Loading folder..." : panel.profileSettings.wallpaperDirectory && panel.directoryWallpaperCount === 0 ? "No supported images found in folder" : panel.wallpapers.length + " wallpapers"
             color: Ui.Theme.muted
             font.pixelSize: 12
         }

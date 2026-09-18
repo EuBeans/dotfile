@@ -17,6 +17,7 @@ Rectangle {
     readonly property alias fixture: fixtures
     readonly property alias desktop: desktop
     signal screenshotRequested()
+    signal workspaceOverviewRequested()
     color: Ui.Theme.stage
 
     FixtureState { id: fixtures; objectName: "fixtures" }
@@ -235,6 +236,7 @@ Rectangle {
                 onHeightChanged: returnToBounds()
                 DesktopPreview {
                     onScreenshotRequested: studio.screenshotRequested()
+                    onWorkspaceOverviewRequested: studio.workspaceOverviewRequested()
                     onLockPreviewRequested: studio.lockPreviewVisible = true
                     id: desktop
                     objectName: "desktop"

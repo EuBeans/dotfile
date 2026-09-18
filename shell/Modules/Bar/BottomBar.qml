@@ -19,6 +19,7 @@ Rectangle {
     readonly property var selectedWindows: scopedWindows.filter(window => window.appId === selectedApp)
     signal focusRequested(int windowId)
     signal launcherRequested()
+    signal workspaceOverviewRequested()
     signal captureRequested()
     implicitWidth: content.implicitWidth + 16
     implicitHeight: 52
@@ -31,12 +32,13 @@ Rectangle {
         id: content
         anchors.fill: parent
         anchors.margins: 8
-        spacing: 6
+        spacing: 4
         Ui.ActionButton { objectName: "bottomLauncher"; iconName: "search"; description: "Applications"; onClicked: bar.launcherRequested() }
+        Ui.ActionButton { objectName: "bottomOverview"; iconName: "panels-top-left"; description: "Workspace overview"; onClicked: bar.workspaceOverviewRequested() }
         ListView {
             id: workspaces
             objectName: "bottomWorkspaces"
-            Layout.preferredWidth: Math.min(110, count * 26 - 2)
+            Layout.preferredWidth: Math.min(bar.compact ? 76 : 110, count * 26 - 2)
             Layout.minimumWidth: 50
             Layout.fillHeight: true
             orientation: ListView.Horizontal

@@ -19,9 +19,11 @@ Item {
     required property var state
     property string openPanel: ""
     signal launcherClosed()
+    readonly property alias paletteGenerator: wallpaperPalette
     signal overviewClosed()
     signal clipboardClosed()
     signal screenshotRequested()
+    signal workspaceOverviewRequested()
     signal lockPreviewRequested()
     property int selectedGpu: 0
     readonly property alias tiling: tiling
@@ -78,6 +80,7 @@ Item {
         id: wallpaperPalette
         objectName: "wallpaperPalette"
         source: desktop.state.selectedWallpaper.source
+        extractionEnabled: desktop.state.profileSettings.currentProfile.source === "Wallpaper"
     }
     Binding { target: desktop.state.profileSettings; property: "sampledPalette"; value: wallpaperPalette.palette }
     Keys.onEscapePressed: openPanel = ""
@@ -102,6 +105,7 @@ Item {
         return false;
     }
     function togglePanel(name) { openPanel = openPanel === name ? "" : name; }
+    function requestWorkspaceOverview() { openPanel = ""; workspaceOverviewRequested(); }
     function cycleWindows(direction) { windowSwitcher.cycle(direction); }
     Shortcut {
         sequence: "Alt+Tab"
@@ -137,6 +141,7 @@ Item {
         id: shortcuts
         onActivated: action => {
             if (action === "settings") settingsWindow.open();
+            else if (action === "workspaceOverview") desktop.requestWorkspaceOverview();
             else if (action === "profile") desktop.nextProfile();
             else if (action === "playback") { if (desktop.state.mediaAvailable) desktop.state.playing = !desktop.state.playing; }
             else if (action === "previous") desktop.state.skipTrack(-1);
@@ -154,6 +159,7 @@ Item {
     Image {
         anchors.fill: parent
         source: desktop.state.selectedWallpaper.source
+        objectName: "desktopWallpaper"
         fillMode: Image.PreserveAspectCrop
     }
     MouseArea {
@@ -210,7 +216,7 @@ Item {
     BottomBar {
         id: bottomBar
         anchors.alignWhenCentered: false
-        compact: desktop.width < 400
+        compact: desktop.width < 480
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 12
         anchors.horizontalCenter: parent.horizontalCenter
@@ -220,6 +226,7 @@ Item {
         openPanel: desktop.openPanel
         onLauncherRequested: desktop.togglePanel("launcher")
         onCaptureRequested: { desktop.openPanel = ""; desktop.screenshotRequested(); }
+        onWorkspaceOverviewRequested: desktop.requestWorkspaceOverview()
         onFocusRequested: windowId => {
             desktop.state.windowManager.focus(windowId);
             tiling.shown = true;
@@ -316,8 +323,23 @@ Item {
             id: launcher
             anchors.fill: parent
             applications: desktop.state.launcherApps
+            windows: desktop.state.windowManager.windows
             opened: desktop.openPanel === "launcher"
             onCloseRequested: desktop.openPanel = ""
+            onWindowRequested: windowId => {
+                desktop.state.windowManager.focus(windowId);
+                tiling.shown = true;
+                tiling.maximizedIndex = -1;
+                desktop.openPanel = "";
+            }
+            onRunRequested: command => {
+                desktop.state.notify("Command preview", "Not executed: " + command);
+                desktop.openPanel = "";
+            }
+            onFileRequested: path => {
+                desktop.state.notify("File preview", "Not opened: " + path);
+                desktop.openPanel = "";
+            }
             onLaunchRequested: appId => {
                 desktop.state.launchApp(appId);
                 desktop.openPanel = "";
@@ -408,6 +430,7 @@ Item {
             selected: desktop.state.wallpaper
             profileSettings: desktop.state.profileSettings
             folderLoading: desktop.state.wallpaperFolderLoading
+            directoryWallpaperCount: desktop.state.directoryWallpapers.length
             onSelectedRequested: index => desktop.state.setWallpaper(index)
             onCloseRequested: desktop.openPanel = ""
         }

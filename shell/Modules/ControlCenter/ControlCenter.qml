@@ -41,6 +41,8 @@ Rectangle {
     implicitHeight: 530
     color: Ui.Theme.surface
     border.color: Ui.Theme.surfaceEdge
+    radius: Ui.Theme.panelRadius
+    antialiasing: true
     topLeftRadius: Ui.Theme.floatingPanels ? Ui.Theme.panelRadius : 0
     topRightRadius: Ui.Theme.panelRadius
     bottomLeftRadius: Ui.Theme.floatingPanels ? Ui.Theme.panelRadius : 0
@@ -567,6 +569,7 @@ Rectangle {
             selected: panel.service.wallpaper
             profileSettings: panel.service.profileSettings
             folderLoading: panel.service.wallpaperFolderLoading
+            directoryWallpaperCount: panel.service.directoryWallpapers.length
             onSelectedRequested: index => panel.wallpaperSelected(index)
         }
     }

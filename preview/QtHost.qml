@@ -16,5 +16,6 @@ Window {
         id: studio
         anchors.fill: parent
         onScreenshotRequested: studio.fixture.notify("HyprQuickshot", "Unavailable in the native preview", "critical")
+        onWorkspaceOverviewRequested: studio.fixture.notify("Workspace overview", "Requires Quickshell and a Hyprland session", "critical")
     }
 }
