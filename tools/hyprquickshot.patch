@@ -1,0 +1,811 @@
+diff --git a/shell.qml b/shell.qml
+index 456dc14..00b23e3 100644
+--- a/shell.qml
++++ b/shell.qml
+@@ -1,3 +1,4 @@
++//@ pragma Env QT_QUICK_BACKEND=software
+ import QtQuick 
+ import QtQuick.Controls 
+ import Quickshell 
+@@ -8,135 +9,246 @@ import Quickshell.Io
+ import QtCore
+ 
+ import "src"
++import "src/CaptureGeometry.js" as Geometry
+ 
+-FreezeScreen {
++Scope {
+     id: root
+-    visible: false
++    property bool visible: false
+ 
+     property var activeScreen: null
++    property string capturePhase: "starting"
++    property string captureError: ""
++    readonly property string outputDirectory: Quickshell.env("HQS_DIR") || Quickshell.env("XDG_SCREENSHOTS_DIR") || Quickshell.env("XDG_PICTURES_DIR") || (Quickshell.env("HOME") + "/Pictures")
++    property var capturedWindows: []
++    property var captureScreens: []
++    property var readyScreens: []
++    property rect desktopGeometry: Qt.rect(0, 0, 1, 1)
++    property rect selectionRect: Qt.rect(0, 0, 0, 0)
++    property rect windowSelection: Qt.rect(0, 0, 0, 0)
++    property url screenshotSource
++    readonly property real width: desktopGeometry.width
++    readonly property real height: desktopGeometry.height
+ 
+     Settings {
+         id: settings
++        location: StandardPaths.writableLocation(StandardPaths.GenericConfigLocation) + "/hyprquickshot.ini"
+         category: "Hyprquickshot"
+         property bool saveToDisk: true 
+     }
+ 
+     Connections {
+         target: Hyprland
+-        enabled: activeScreen === null
++        enabled: root.capturePhase === "starting"
+ 
+-        function onFocusedMonitorChanged() {
+-            const monitor = Hyprland.focusedMonitor
+-            if(!monitor) return
+-
+-            for (const screen of Quickshell.screens) {
+-                if (screen.name === monitor.name) {
+-                    activeScreen = screen
++        function onFocusedMonitorChanged() { root.startCapture(); }
++    }
+ 
+-                    const timestamp = Date.now()
+-                    const path = Quickshell.cachePath(`screenshot-${timestamp}.png`)
+-                    tempPath = path
+-                    Quickshell.execDetached(["grim", "-g", `${screen.x},${screen.y} ${screen.width}x${screen.height}`, path])
+-                    showTimer.start()
+-                }
++    Component.onCompleted: {
++        Quickshell.watchFiles = false;
++        Qt.callLater(startCapture);
++    }
++    function startCapture() {
++        if (capturePhase !== "starting" || activeScreen || freeze.running) return;
++        const monitor = Hyprland.focusedMonitor;
++        if (!monitor) return;
++        const screens = Quickshell.screens.map(screen => {
++            const source = Hyprland.monitorFor(screen);
++            const metadata = source?.lastIpcObject;
++            return metadata ? {screen: screen, name: screen.name, x: metadata.x, y: metadata.y,
++                width: screen.width, height: screen.height, scale: source.scale,
++                monitorId: source.id, workspaceId: source.activeWorkspace?.id,
++                specialWorkspaceId: metadata.specialWorkspace?.id} : null;
++        });
++        if (!screens.length || screens.some(screen => !screen)) return;
++        let geometry;
++        try { geometry = Geometry.desktop(screens); }
++        catch (error) { root.failCapture(String(error)); return; }
++        capturePhase = "capturing";
++        activeScreen = screens.find(screen => screen.name === monitor.name)?.screen || screens[0].screen;
++        startupTimeout.stop();
++        desktopGeometry = Qt.rect(geometry.x, geometry.y, geometry.width, geometry.height);
++        capturedWindows = Geometry.visibleWindows(Hyprland.toplevels.values.map(window => window.lastIpcObject), screens);
++        captureScreens = screens;
++        if (Quickshell.env("HQS_VALIDATE_ONLY") === "1") {
++            console.info("Capture layout:", JSON.stringify({screens: screens.map(screen => screen.name), geometry: geometry}));
++            Qt.callLater(Qt.quit);
++            return;
++        }
++        tempPath = Quickshell.cachePath(`screenshot-${Date.now()}.png`);
++        freeze.command = ["timeout", "15", "grim", "-g", `${geometry.x},${geometry.y} ${geometry.width}x${geometry.height}`,
++            "-s", String(geometry.scale), "-l", "1", tempPath];
++        freeze.running = true;
++    }
++    function screenReady(name) {
++        if (capturePhase !== "capturing" || readyScreens.includes(name)) return;
++        readyScreens = readyScreens.concat([name]);
++        if (readyScreens.length !== captureScreens.length) return;
++        capturePhase = "selecting";
++        root.visible = true;
++    }
++    function failCapture(message) {
++        if (capturePhase === "done" || capturePhase === "cancelled") return;
++        capturePhase = "done";
++        root.visible = false;
++        console.warn("Screenshot failed:", message);
++        Quickshell.execDetached(["notify-send", "Screenshot failed", message]);
++        if (tempPath) Quickshell.execDetached(["rm", "-f", "--", tempPath]);
++        Qt.quit();
++    }
++    Connections {
++        target: Quickshell
++        function onScreensChanged() {
++            if (root.capturePhase === "starting") root.startCapture();
++            else if (root.capturePhase === "capturing" || root.capturePhase === "selecting")
++                root.failCapture("Displays changed during capture; start a new screenshot");
++        }
++    }
++    Timer {
++        interval: 50
++        repeat: true
++        running: root.capturePhase === "starting"
++        onTriggered: root.startCapture()
++    }
++    Timer {
++        id: startupTimeout
++        interval: 5000
++        running: true
++        onTriggered: {
++            root.failCapture("Display information did not become available");
++        }
++    }
++    Process {
++        id: freeze
++        stderr: StdioCollector { id: freezeError }
++        onExited: (exitCode, exitStatus) => {
++            if (exitCode !== 0 || exitStatus !== 0) {
++                root.failCapture(freezeError.text || "Could not capture the desktop");
++                return;
+             }
++            root.screenshotSource = "file://" + root.tempPath;
+         }
+     }
+-
+-    targetScreen: activeScreen
+-
+-    property var hyprlandMonitor: Hyprland.focusedMonitor
+     property string tempPath
+ 
+     property string mode: "region"
+ 
+-    Shortcut {
+-        sequence: "Escape"
+-        onActivated: () => {
+-            Quickshell.execDetached(["rm", tempPath])
+-            Qt.quit()
++    IpcHandler {
++        target: "capture"
++        function status(): string {
++            return JSON.stringify({ready: root.visible, screens: root.captureScreens.map(screen => screen.name), geometry: root.desktopGeometry, busy: screenshotProcess.running, error: root.captureError});
+         }
++        function region(x: int, y: int, width: int, height: int): void {
++            if (root.visible) root.processScreenshot(x, y, width, height);
++        }
++        function cancel(): void { root.cancelCapture(); }
+     }
+- 
+-    Timer {
+-        id: showTimer
+-        interval: 50
+-        running: false
+-        repeat: false
+-        onTriggered: root.visible = true
++    function cancelCapture() {
++        if (screenshotProcess.running) return;
++        capturePhase = "cancelled";
++        if (tempPath) Quickshell.execDetached(["rm", "-f", "--", tempPath]);
++        Qt.quit();
+     }
++
+  
+     Process {
+         id: screenshotProcess
+         running: false
+ 
+-        onExited: () => {
+-            Qt.quit()
+-        }
+-
+-        stdout: StdioCollector {
+-            onStreamFinished: console.log(this.text)
+-        }
+-        stderr: StdioCollector {
+-            onStreamFinished: console.log(this.text)
++        stdout: StdioCollector { id: screenshotOutput }
++        stderr: StdioCollector { id: screenshotError }
++        onExited: (exitCode, exitStatus) => {
++            let result = {};
++            try { result = JSON.parse(screenshotOutput.text); } catch (_error) {}
++            Quickshell.execDetached(["rm", "-f", "--", root.tempPath]);
++            if (!result.success && !result.save_error && !result.clipboard_error) {
++                result.error = result.error || screenshotError.text || "Screenshot processing failed";
++            }
++            root.captureError = result.error || result.save_error || result.clipboard_error || "";
++            if (root.captureError) {
++                console.warn("Screenshot processing failed:", root.captureError);
++            }
++            root.capturePhase = "done";
++            const title = result.path && result.copied ? "Screenshot saved and copied" : result.path ? "Screenshot saved" : result.copied ? "Screenshot copied" : "Screenshot failed";
++            const message = [result.path ? "Saved to " + result.path : "", result.copied ? "Copied to clipboard" : "Not copied to clipboard", root.captureError].filter(value => value).join("\n");
++            Quickshell.execDetached(["notify-send", title, message]);
++            Qt.quit();
+         }
+ 
+     }
+ 
+     function processScreenshot(x, y, width, height) {
+-        const scale = hyprlandMonitor.scale
+-        const scaledX = Math.round(x * scale)
+-        const scaledY = Math.round(y * scale)
+-        const scaledWidth = Math.round(width * scale)
+-        const scaledHeight = Math.round(height * scale)
+-
+-        const picturesDir = Quickshell.env("HQS_DIR") || Quickshell.env("XDG_SCREENSHOTS_DIR") || Quickshell.env("XDG_PICTURES_DIR") || (Quickshell.env("HOME") + "/Pictures")
+-
+-        const now = new Date()
+-        const timestamp = Qt.formatDateTime(now, "yyyy-MM-dd_hh-mm-ss")
+-
+-        const outputPath = settings.saveToDisk ? `${picturesDir}/screenshot-${timestamp}.png` : root.tempPath
+-
+-        screenshotProcess.command = ["sh", "-c",
+-            `magick "${tempPath}" -crop ${scaledWidth}x${scaledHeight}+${scaledX}+${scaledY} "${outputPath}" && ` +
+-            `wl-copy < "${outputPath}" && ` +
+-            `rm "${tempPath}"`
+-        ]
+-
++        if (capturePhase !== "selecting" || screenshotProcess.running || width <= 0 || height <= 0) return;
++        capturePhase = "processing";
++        const command = ["python3", Quickshell.shellPath("capture_screenshot.py"), tempPath,
++            "--region", String(x), String(y), String(width), String(height),
++            "--view-size", String(root.width), String(root.height)];
++        if (settings.saveToDisk) command.push("--output-directory", outputDirectory);
++        captureError = "";
++        screenshotProcess.command = command;
+         screenshotProcess.running = true
+         root.visible = false
+     }
+ 
++    Variants {
++        model: root.captureScreens
++        FreezeScreen {
++            id: surface
++            required property var modelData
++            targetScreen: modelData.screen
++            visible: root.visible
++            screenshotSource: root.screenshotSource
++            captureGeometry: root.desktopGeometry
++            viewportOrigin: Qt.point(modelData.x, modelData.y)
++            onCaptureReady: root.screenReady(modelData.name)
++            onCaptureFailed: root.failCapture("Could not load the captured desktop")
++
++            Shortcut {
++                sequence: "Escape"
++                onActivated: root.cancelCapture()
++            }
++
++            Item {
++                x: root.desktopGeometry.x - surface.modelData.x
++                y: root.desktopGeometry.y - surface.modelData.y
++                width: root.width
++                height: root.height
++
+     RegionSelector {
+-        visible: mode === "region"
++        visible: root.mode === "region"
+         id: regionSelector
+         anchors.fill: parent
++        selectionState: root
+  
+         dimOpacity: 0.6
+         borderRadius: 10.0
+         outlineThickness: 2.0
+  
+         onRegionSelected: (x, y, width, height) => {
+-            processScreenshot(x, y, width, height)
++            root.processScreenshot(x, y, width, height)
+         }
+     }
+  
+     WindowSelector {
+-        visible: mode === "window"
++        visible: root.mode === "window"
+         id: windowSelector
+         anchors.fill: parent
+  
+-        monitor: root.hyprlandMonitor
++        windows: root.capturedWindows
++        selectionState: root
++        monitorX: root.desktopGeometry.x
++        monitorY: root.desktopGeometry.y
+         dimOpacity: 0.6
+         borderRadius: 10.0
+         outlineThickness: 2.0
+  
+         onRegionSelected: (x, y, width, height) => {
+-            processScreenshot(x, y, width, height)
++            root.processScreenshot(x, y, width, height)
+         }
+     }
+  
+-    WrapperRectangle {
++            }
++
++        WrapperRectangle {
+         anchors.horizontalCenter: parent.horizontalCenter
+         anchors.bottom: parent.bottom
+         anchors.bottomMargin: 40
+@@ -164,11 +276,12 @@ FreezeScreen {
+ 						id: modeButton
+ 						implicitWidth: 48
+ 						implicitHeight: 48
++                        CompactHint { text: modelData.mode === "region" ? "Region" : modelData.mode === "window" ? "Window" : "All displays" }
+ 
+ 						background: Rectangle {
+ 							radius: 8
+ 							color: {
+-								if(mode === modelData.mode) return Qt.rgba(0.3, 0.4, 0.7, 0.5)
++                                if(root.mode === modelData.mode) return Qt.rgba(0.3, 0.4, 0.7, 0.5)
+ 								if (modeButton.hovered) return Qt.rgba(0.4, 0.4, 0.4, 0.5)
+ 
+ 								return Qt.rgba(0.3, 0.3, 0.35, 0.5)
+@@ -192,7 +305,7 @@ FreezeScreen {
+ 						onClicked: {
+ 							root.mode = modelData.mode
+ 							if (modelData.mode === "screen") {
+-								processScreenshot(0, 0, root.targetScreen.width, root.targetScreen.height)
++                                root.processScreenshot(0, 0, root.width, root.height)
+ 							}
+ 						}
+ 					}
+@@ -216,8 +329,11 @@ FreezeScreen {
+ 					id: saveSwitch
+ 					checked: settings.saveToDisk
+ 					onCheckedChanged: settings.saveToDisk = checked
++                    CompactHint { text: saveSwitch.checked ? "Save + copy\n" + root.outputDirectory : "Clipboard only" }
+ 				}
+ 			}
+ 		}
+     }
++                }
++        }
+ }
+diff --git a/src/FreezeScreen.qml b/src/FreezeScreen.qml
+index e08052c..66390b9 100644
+--- a/src/FreezeScreen.qml
++++ b/src/FreezeScreen.qml
+@@ -6,6 +6,11 @@ PanelWindow {
+     id: root  
+       
+     property var targetScreen: Quickshell.screens[0]
++    property url screenshotSource
++    property rect captureGeometry: Qt.rect(0, 0, width, height)
++    property point viewportOrigin: Qt.point(0, 0)
++    signal captureReady()
++    signal captureFailed()
+     property alias contentItem: root.contentItem  
+ 
+     screen: targetScreen
+@@ -19,11 +24,19 @@ PanelWindow {
+   
+     exclusionMode: ExclusionMode.Ignore  
+     WlrLayershell.layer: WlrLayer.Overlay  
+-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand  
++    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+   
+-    ScreencopyView {  
+-        captureSource: root.targetScreen
+-        anchors.fill: parent  
++    Image {
++        source: root.screenshotSource
++        x: root.captureGeometry.x - root.viewportOrigin.x
++        y: root.captureGeometry.y - root.viewportOrigin.y
++        width: root.captureGeometry.width
++        height: root.captureGeometry.height
+         z: -1
++        fillMode: Image.Stretch
++        onStatusChanged: {
++            if (status === Image.Ready) root.captureReady();
++            else if (status === Image.Error) root.captureFailed();
++        }
+     }  
+ }
+diff --git a/src/RegionSelector.qml b/src/RegionSelector.qml
+index 7b3ee16..af109ac 100644
+--- a/src/RegionSelector.qml
++++ b/src/RegionSelector.qml
+@@ -11,39 +11,57 @@ Item {
+     property real outlineThickness: 2.0  
+     property url fragmentShader: Qt.resolvedUrl("../shaders/dimming.frag.qsb")  
+       
+-    property point startPos  
+-    property real selectionX: 0  
+-    property real selectionY: 0  
+-    property real selectionWidth: 0  
+-    property real selectionHeight: 0  
++    property point startPos
++    property var selectionState: null
++    property real selectionX: selectionState ? selectionState.selectionRect.x : targetX
++    property real selectionY: selectionState ? selectionState.selectionRect.y : targetY
++    property real selectionWidth: selectionState ? selectionState.selectionRect.width : targetWidth
++    property real selectionHeight: selectionState ? selectionState.selectionRect.height : targetHeight
+       
+     property real targetX: 0  
+     property real targetY: 0  
+     property real targetWidth: 0  
+     property real targetHeight: 0  
++
++    Behavior on selectionX { SpringAnimation { spring: 4; damping: 0.4 } }
++    Behavior on selectionY { SpringAnimation { spring: 4; damping: 0.4 } }
++    Behavior on selectionHeight { SpringAnimation { spring: 4; damping: 0.4 } }
++    Behavior on selectionWidth { SpringAnimation { spring: 4; damping: 0.4 } }
+       
+-    Behavior on selectionX { SpringAnimation { spring: 4; damping: 0.4 } }  
+-    Behavior on selectionY { SpringAnimation { spring: 4; damping: 0.4 } }  
+-    Behavior on selectionHeight { SpringAnimation { spring: 4; damping: 0.4 } }  
+-    Behavior on selectionWidth { SpringAnimation { spring: 4; damping: 0.4 } }  
++    function updateSelection(pointerX, pointerY) {
++        const boundedX = Math.max(0, Math.min(width, pointerX));
++        const boundedY = Math.max(0, Math.min(height, pointerY));
++        targetX = Math.min(startPos.x, boundedX);
++        targetY = Math.min(startPos.y, boundedY);
++        targetWidth = Math.abs(boundedX - startPos.x);
++        targetHeight = Math.abs(boundedY - startPos.y);
++        if (selectionState)
++            selectionState.selectionRect = Qt.rect(targetX, targetY, targetWidth, targetHeight);
++    }
+       
+     // Shader overlay  
+-    ShaderEffect {  
++    ShaderEffect {
++        anchors.fill: parent
++        z: 0
++        visible: GraphicsInfo.api !== GraphicsInfo.Software
++        property vector4d selectionRect: Qt.vector4d(root.selectionX, root.selectionY, root.selectionWidth, root.selectionHeight)
++        property real dimOpacity: root.dimOpacity
++        property vector2d screenSize: Qt.vector2d(root.width, root.height)
++        property real borderRadius: root.borderRadius
++        property real outlineThickness: root.outlineThickness
++        fragmentShader: root.fragmentShader
++    }
++    SelectionOverlay {
+         anchors.fill: parent  
+         z: 0  
+-          
+-        property vector4d selectionRect: Qt.vector4d(  
+-            root.selectionX,  
+-            root.selectionY,  
+-            root.selectionWidth,  
+-            root.selectionHeight  
+-        )  
+-        property real dimOpacity: root.dimOpacity  
+-        property vector2d screenSize: Qt.vector2d(root.width, root.height)  
+-        property real borderRadius: root.borderRadius  
+-        property real outlineThickness: root.outlineThickness  
+-          
+-        fragmentShader: root.fragmentShader  
++        visible: GraphicsInfo.api === GraphicsInfo.Software
++        selectionX: root.selectionX
++        selectionY: root.selectionY
++        selectionWidth: root.selectionWidth
++        selectionHeight: root.selectionHeight
++        dimOpacity: root.dimOpacity
++        borderRadius: root.borderRadius
++        outlineThickness: root.outlineThickness
+     }  
+       
+     MouseArea {  
+@@ -51,48 +69,26 @@ Item {
+         anchors.fill: parent  
+         z: 3  
+           
+-        Timer {  
+-            id: updateTimer  
+-            interval: 16  
+-            repeat: true  
+-            running: mouseArea.pressed  
+-            onTriggered: {  
+-                root.selectionX = root.targetX  
+-                root.selectionY = root.targetY  
+-                root.selectionWidth = root.targetWidth  
+-                root.selectionHeight = root.targetHeight  
+-            }  
+-        }  
++        preventStealing: true
+           
+         onPressed: (mouse) => {  
+             root.startPos = Qt.point(mouse.x, mouse.y)  
+-            root.targetX = mouse.x  
+-            root.targetY = mouse.y  
+-            root.targetWidth = 0  
+-            root.targetHeight = 0  
++            root.updateSelection(mouse.x, mouse.y)
+         }  
+           
+         onPositionChanged: (mouse) => {  
+-            if (pressed) {  
+-                const x = Math.min(root.startPos.x, mouse.x)  
+-                const y = Math.min(root.startPos.y, mouse.y)  
+-                const width = Math.abs(mouse.x - root.startPos.x)  
+-                const height = Math.abs(mouse.y - root.startPos.y)  
+-                  
+-                root.targetX = x  
+-                root.targetY = y  
+-                root.targetWidth = width  
+-                root.targetHeight = height  
+-            }  
++            if (pressed) root.updateSelection(mouse.x, mouse.y)
+         }  
+           
+-        onReleased: {  
+-            root.regionSelected(  
+-                Math.round(root.selectionX),  
+-                Math.round(root.selectionY),  
+-                Math.round(root.selectionWidth),  
+-                Math.round(root.selectionHeight)  
+-            )  
++        onReleased: mouse => {
++            root.updateSelection(mouse.x, mouse.y);
++            if (root.targetWidth > 1 && root.targetHeight > 1)
++                root.regionSelected(root.targetX, root.targetY, root.targetWidth, root.targetHeight);
+         }  
++        onCanceled: {
++            root.targetWidth = 0;
++            root.targetHeight = 0;
++            if (root.selectionState) root.selectionState.selectionRect = Qt.rect(0, 0, 0, 0);
++        }
+     }  
+ }
+diff --git a/src/WindowSelector.qml b/src/WindowSelector.qml
+index 4f08b0a..2341ebf 100644
+--- a/src/WindowSelector.qml
++++ b/src/WindowSelector.qml
+@@ -1,12 +1,11 @@
+ import QtQuick  
+-import Quickshell.Hyprland
+ 
+ Item {  
+     id: root
+ 
+-    property var monitor: Hyprland.focusedMonitor
+-    property var workspace: monitor?.activeWorkspace
+-    property var windows: workspace?.toplevels ?? []
++    property var windows: []
++    property real monitorX: 0
++    property real monitorY: 0
+ 
+     signal checkHover(real mouseX, real mouseY)
+     signal regionSelected(real x, real y, real width, real height)  
+@@ -18,64 +17,52 @@ Item {
+     property url fragmentShader: Qt.resolvedUrl("../shaders/dimming.frag.qsb")  
+       
+     property point startPos  
+-    property real selectionX: 0  
+-    property real selectionY: 0  
+-    property real selectionWidth: 0  
+-    property real selectionHeight: 0  
++    property var selectionState: null
++    property rect targetRect: Qt.rect(0, 0, 0, 0)
++    readonly property rect sharedRect: selectionState ? selectionState.windowSelection : targetRect
++    property real selectionX: sharedRect.x
++    property real selectionY: sharedRect.y
++    property real selectionWidth: sharedRect.width
++    property real selectionHeight: sharedRect.height
++
++    Behavior on selectionX { SpringAnimation { spring: 4; damping: 0.4 } }
++    Behavior on selectionY { SpringAnimation { spring: 4; damping: 0.4 } }
++    Behavior on selectionHeight { SpringAnimation { spring: 4; damping: 0.4 } }
++    Behavior on selectionWidth { SpringAnimation { spring: 4; damping: 0.4 } }
+       
+-    Behavior on selectionX { SpringAnimation { spring: 4; damping: 0.4 } }  
+-    Behavior on selectionY { SpringAnimation { spring: 4; damping: 0.4 } }  
+-    Behavior on selectionHeight { SpringAnimation { spring: 4; damping: 0.4 } }  
+-    Behavior on selectionWidth { SpringAnimation { spring: 4; damping: 0.4 } }  
++    function selectAt(pointerX, pointerY) {
++        const selected = windows.find(window => window.at && window.size &&
++            pointerX >= window.at[0] - monitorX && pointerX < window.at[0] - monitorX + window.size[0] &&
++            pointerY >= window.at[1] - monitorY && pointerY < window.at[1] - monitorY + window.size[1]);
++        targetRect = selected ? Qt.rect(selected.at[0] - monitorX, selected.at[1] - monitorY, selected.size[0], selected.size[1]) : Qt.rect(0, 0, 0, 0);
++        if (selectionState) selectionState.windowSelection = targetRect;
++        return targetRect;
++    }
+       
+     // Shader overlay  
+-    ShaderEffect {  
++    ShaderEffect {
++        anchors.fill: parent
++        z: 0
++        visible: GraphicsInfo.api !== GraphicsInfo.Software
++        property vector4d selectionRect: Qt.vector4d(root.selectionX, root.selectionY, root.selectionWidth, root.selectionHeight)
++        property real dimOpacity: root.dimOpacity
++        property vector2d screenSize: Qt.vector2d(root.width, root.height)
++        property real borderRadius: root.borderRadius
++        property real outlineThickness: root.outlineThickness
++        fragmentShader: root.fragmentShader
++    }
++    SelectionOverlay {
+         anchors.fill: parent  
+         z: 0  
+-          
+-        property vector4d selectionRect: Qt.vector4d(  
+-            root.selectionX,  
+-            root.selectionY,  
+-            root.selectionWidth,  
+-            root.selectionHeight  
+-        )  
+-        property real dimOpacity: root.dimOpacity  
+-        property vector2d screenSize: Qt.vector2d(root.width, root.height)  
+-        property real borderRadius: root.borderRadius  
+-        property real outlineThickness: root.outlineThickness  
+-          
+-        fragmentShader: root.fragmentShader  
++        visible: GraphicsInfo.api === GraphicsInfo.Software
++        selectionX: root.selectionX
++        selectionY: root.selectionY
++        selectionWidth: root.selectionWidth
++        selectionHeight: root.selectionHeight
++        dimOpacity: root.dimOpacity
++        borderRadius: root.borderRadius
++        outlineThickness: root.outlineThickness
+     }  
+-
+-    Repeater {
+-        model: root.windows
+-
+-        Item {
+-            required property var modelData
+-
+-            Connections {
+-                target: root
+-
+-                function onCheckHover(mouseX, mouseY) {
+-                    const monitorX = root.monitor.lastIpcObject.x
+-                    const monitorY = root.monitor.lastIpcObject.y
+-                    
+-                    const windowX = modelData.lastIpcObject.at[0] - monitorX
+-                    const windowY = modelData.lastIpcObject.at[1] - monitorY
+-                    
+-                    const width = modelData.lastIpcObject.size[0]
+-                    const height = modelData.lastIpcObject.size[1]
+-
+-                    if (mouseX >= windowX && mouseX <= windowX + width && mouseY >= windowY && mouseY <= windowY + height) {
+-                        selectionX = windowX
+-                        selectionY = windowY
+-                        selectionWidth = width
+-                        selectionHeight = height
+-                    }
+-                }
+-            }
+-        }
+-    }
+       
+     MouseArea {  
+         id: mouseArea  
+@@ -84,17 +71,17 @@ Item {
+         hoverEnabled: true
+           
+         onPositionChanged: (mouse) => { 
+-            root.checkHover(mouse.x, mouse.y)
++            root.selectAt(mouse.x, mouse.y)
+         }  
+           
+         onReleased: (mouse) => {  
+-            if (mouse.x >= root.selectionX && mouse.x <= root.selectionX + root.selectionWidth &&
+-                mouse.y >= root.selectionY && mouse.y <= root.selectionY + root.selectionHeight) {
++            const selection = root.selectAt(mouse.x, mouse.y);
++            if (selection.width > 0 && selection.height > 0) {
+                 root.regionSelected(  
+-                    Math.round(root.selectionX),  
+-                    Math.round(root.selectionY),  
+-                    Math.round(root.selectionWidth),  
+-                    Math.round(root.selectionHeight)  
++                    Math.round(selection.x),
++                    Math.round(selection.y),
++                    Math.round(selection.width),
++                    Math.round(selection.height)
+                 )  
+             }
+         }  
+diff --git a/src/SelectionOverlay.qml b/src/SelectionOverlay.qml
+new file mode 100644
+index 0000000..788feb7
+--- /dev/null
++++ b/src/SelectionOverlay.qml
+@@ -0,0 +1,41 @@
++import QtQuick
++
++Item {
++    id: root
++    property real selectionX: 0
++    property real selectionY: 0
++    property real selectionWidth: 0
++    property real selectionHeight: 0
++    property real dimOpacity: 0.6
++    property real outlineThickness: 2
++    property real borderRadius: 10
++    readonly property real cutLeft: Math.max(0, Math.min(width, selectionX))
++    readonly property real cutTop: Math.max(0, Math.min(height, selectionY))
++    readonly property real cutRight: Math.max(cutLeft, Math.min(width, selectionX + selectionWidth))
++    readonly property real cutBottom: Math.max(cutTop, Math.min(height, selectionY + selectionHeight))
++    Repeater {
++        model: [Qt.rect(0, 0, root.width, root.cutTop),
++            Qt.rect(0, root.cutBottom, root.width, root.height - root.cutBottom),
++            Qt.rect(0, root.cutTop, root.cutLeft, root.cutBottom - root.cutTop),
++            Qt.rect(root.cutRight, root.cutTop, root.width - root.cutRight, root.cutBottom - root.cutTop)]
++        Rectangle {
++            required property var modelData
++            x: modelData.x
++            y: modelData.y
++            width: modelData.width
++            height: modelData.height
++            color: Qt.rgba(0, 0, 0, root.dimOpacity)
++        }
++    }
++    Rectangle {
++        x: root.cutLeft
++        y: root.cutTop
++        width: root.cutRight - root.cutLeft
++        height: root.cutBottom - root.cutTop
++        visible: width > 0 && height > 0
++        color: "transparent"
++        radius: root.borderRadius
++        border.color: "#ffffff"
++        border.width: root.outlineThickness
++    }
++}
+\ No newline at end of file
+diff --git a/src/CaptureGeometry.js b/src/CaptureGeometry.js
+new file mode 100644
+index 0000000..a0f483b
+--- /dev/null
++++ b/src/CaptureGeometry.js
+@@ -0,0 +1,25 @@
++function desktop(screens) {
++    if (!screens.length) throw new Error("No displays available");
++    for (const screen of screens) {
++        if (![screen.x, screen.y, screen.width, screen.height, screen.scale].every(Number.isFinite) ||
++            Math.min(screen.width, screen.height, screen.scale) <= 0)
++            throw new Error("Invalid display geometry");
++    }
++    const left = Math.floor(Math.min(...screens.map(screen => screen.x)));
++    const top = Math.floor(Math.min(...screens.map(screen => screen.y)));
++    return {
++        x: left,
++        y: top,
++        width: Math.ceil(Math.max(...screens.map(screen => screen.x + screen.width))) - left,
++        height: Math.ceil(Math.max(...screens.map(screen => screen.y + screen.height))) - top,
++        scale: Math.max(...screens.map(screen => screen.scale))
++    };
++}
++
++function visibleWindows(windows, screens) {
++    return windows.filter(window => window.mapped !== false && !window.hidden && screens.some(screen =>
++        window.monitor === screen.monitorId && (window.pinned || window.workspace?.id === screen.workspaceId ||
++            (screen.specialWorkspaceId < 0 && window.workspace?.id === screen.specialWorkspaceId))))
++        .sort((first, second) => Number(second.floating) - Number(first.floating) ||
++            (first.focusHistoryID ?? 999) - (second.focusHistoryID ?? 999));
++}
+\ No newline at end of file
+diff --git a/src/CompactHint.qml b/src/CompactHint.qml
+new file mode 100644
+index 0000000..0f087c4
+--- /dev/null
++++ b/src/CompactHint.qml
+@@ -0,0 +1,31 @@
++import QtQuick
++import QtQuick.Controls
++
++ToolTip {
++    id: root
++    visible: parent && parent.hovered
++    delay: 650
++    timeout: 4000
++    margins: 8
++    padding: 0
++    horizontalPadding: 8
++    verticalPadding: 5
++    implicitWidth: Math.min(240, hintText.implicitWidth + horizontalPadding * 2)
++    implicitHeight: hintText.implicitHeight + verticalPadding * 2
++    contentItem: Text {
++        id: hintText
++        text: root.text
++        textFormat: Text.PlainText
++        font.pixelSize: 11
++        color: "#eeeeee"
++        wrapMode: Text.WrapAnywhere
++        maximumLineCount: 2
++        elide: Text.ElideRight
++    }
++    background: Rectangle {
++        color: "#252525"
++        border.color: "#525252"
++        border.width: 1
++        radius: 4
++    }
++}
+\ No newline at end of file

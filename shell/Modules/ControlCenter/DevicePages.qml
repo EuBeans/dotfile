@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "../../Components" as Ui
+import "../../Services/DisplaySettings.js" as DisplaySettings
 
 ScrollView {
     id: page
@@ -175,6 +176,11 @@ ScrollView {
             visible: page.section === "Displays"
             Layout.fillWidth: true
             spacing: 16
+            MonitorArrangement {
+                objectName: "homeMonitorArrangement"
+                visible: page.data.devices.monitors.length > 0
+                service: page.data
+            }
             Ui.Label { objectName: "homeDisplayEmptyState"; visible: !page.data.devices.monitors.length; text: "No displays reported"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: Ui.Theme.displayFont; font.pixelSize: 14 }
             Ui.Label { visible: !page.data.devices.monitors.length; text: "Hyprland monitor service unavailable"; Layout.fillWidth: true; wrapMode: Text.Wrap; color: Ui.Theme.muted; font.pixelSize: 11 }
             Repeater {
@@ -182,8 +188,10 @@ ScrollView {
                 ColumnLayout {
                     id: output
                     required property var modelData
-                    readonly property int activeModeIndex: (modelData.availableModes || []).findIndex(value => value.startsWith(modelData.width+"x"+modelData.height+"@") && Math.abs(parseFloat(value.split("@")[1])-modelData.refreshRate)<0.1)
-                    readonly property bool editable: page.data.controlsEnabled && !page.data.busy && !page.data.displayPending && !modelData.disabled
+                    readonly property var modes: DisplaySettings.sortedModes(modelData)
+                    readonly property real maximumRefreshRate: Math.max(0, ...modes.map(value => parseFloat(value.split("@")[1])).filter(Number.isFinite))
+                    readonly property int activeModeIndex: modes.findIndex(value => value.startsWith(modelData.width+"x"+modelData.height+"@") && Math.abs(parseFloat(value.split("@")[1])-modelData.refreshRate)<0.1)
+                    readonly property bool editable: page.data.displayControlsEnabled && !page.data.busy && !page.data.displayPending && !modelData.disabled
                     readonly property bool validScale: Number.isFinite(modelData.scale) && modelData.scale >= 0.5 && modelData.scale <= 3
                     readonly property bool changed: mode.currentIndex !== activeModeIndex || Math.abs(scale.value / 100 - modelData.scale) > 0.001 || rotation.currentIndex !== (modelData.transform || 0)
                     Layout.fillWidth: true
@@ -207,14 +215,24 @@ ScrollView {
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 4
-                        Ui.Label { text: "Mode / Hz"; color: Ui.Theme.muted; font.pixelSize: 11 }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Ui.Label { text: "Mode / Hz"; color: Ui.Theme.muted; font.pixelSize: 11; Layout.fillWidth: true }
+                            Ui.Label {
+                                objectName: "homeDisplayMaximum" + output.modelData.name
+                                visible: output.maximumRefreshRate > 0
+                                text: "Up to " + Math.round(output.maximumRefreshRate) + " Hz"
+                                color: Ui.Theme.paper
+                                font.pixelSize: 11
+                            }
+                        }
                         Ui.Dropdown {
                             id: mode
                             objectName: "homeDisplayMode" + output.modelData.name
                             Layout.fillWidth: true
                             Layout.maximumWidth: 16777215
                             font.pixelSize: 12
-                            model: output.modelData.availableModes || []
+                            model: output.modes
                             currentIndex: output.activeModeIndex
                             displayText: currentIndex < 0 ? (count ? "Select mode" : "Modes unavailable") : currentText
                             Accessible.name: output.modelData.name + " display mode"
@@ -426,17 +444,42 @@ ScrollView {
                 Ui.ActionButton { objectName: "homeNetworkEditor"; iconName: "settings"; description: "Edit connections in NetworkManager"; enabled: networkPage.editable; onClicked: if (enabled) page.data.request(["nm-connection-editor"]) }
             }
             Ui.Label { objectName: "homeNetworkState"; text: page.data.busy ? "Network action in progress" : !page.data.controlsEnabled ? "Read-only" : page.data.devices.wifi ? "Wi-Fi on" : "Wi-Fi off"; Layout.fillWidth: true; wrapMode: Text.Wrap; color: Ui.Theme.muted; font.pixelSize: 11 }
-            Ui.Label { text: "CONNECTIONS"; font.family: Ui.Theme.displayFont; font.pixelSize: 14; Layout.fillWidth: true }
+            RowLayout {
+                Layout.fillWidth: true
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    spacing: 4
+                    Ui.Label { text: "External / public IP"; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                    Ui.Label { objectName: "homeNetworkPublicAddress"; text: page.data.publicAddress || page.data.publicAddressStatus; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere }
+                    Ui.Label { visible: !!page.data.publicAddress; text: page.data.publicAddressStatus; color: Ui.Theme.muted; font.pixelSize: 10; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                }
+                Ui.ActionButton { objectName: "homeNetworkPublicLookup"; iconName: "rotate-ccw"; description: "Check public IPv4 via ipify.org"; enabled: page.data.live && !page.data.publicAddressBusy; onClicked: if (enabled) page.data.publicAddressRequested() }
+            }
+            Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.Theme.line }
+            Ui.Label { text: "Connections"; font.family: Ui.Theme.displayFont; font.pixelSize: 14; Layout.fillWidth: true }
             Repeater {
-                model: page.data.devices.network
+                model: ["Ethernet", "Wi-Fi", "Virtual / VPN"]
+                ColumnLayout {
+                    id: networkGroup
+                    required property string modelData
+                    objectName: "homeNetworkGroup" + modelData
+                    readonly property var devices: page.data.devices.network.filter(device =>
+                        modelData === "Ethernet" ? device.type === "ethernet" : modelData === "Wi-Fi" ? device.type === "wifi" : !["ethernet", "wifi", "loopback"].includes(device.type))
+                    visible: devices.length > 0
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Ui.Label { text: networkGroup.modelData; Layout.fillWidth: true; font.pixelSize: 12; color: Ui.Theme.muted }
+                    Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.Theme.line }
+                    Repeater {
+                model: networkGroup.devices
                 ColumnLayout {
                     id: networkDevice
                     required property var modelData
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
                     spacing: 8
-                    Ui.Label { text: (networkDevice.modelData.type === "wifi" ? "WI-FI" : (networkDevice.modelData.type || "Device").toUpperCase()); textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.Wrap; color: Ui.Theme.muted; font.pixelSize: 10 }
-                    Ui.Label { objectName: "homeNetworkName" + networkDevice.modelData.name; text: networkDevice.modelData.connection && networkDevice.modelData.connection !== "--" ? networkDevice.modelData.connection : networkDevice.modelData.name; textFormat: Text.PlainText; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap; font.pixelSize: 14 }
+                    Ui.Label { objectName: "homeNetworkName" + networkDevice.modelData.name; text: networkDevice.modelData.connection && networkDevice.modelData.connection !== "--" ? networkDevice.modelData.connection : networkDevice.modelData.name; textFormat: Text.PlainText; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap; font.pixelSize: 12 }
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
@@ -450,11 +493,27 @@ ScrollView {
                         Ui.ActionButton { objectName: "homeNetworkDisconnect" + networkDevice.modelData.name; iconName: "x"; description: "Disconnect " + networkDevice.modelData.name; visible: networkDevice.modelData.state === "connected"; enabled: networkPage.editable && networkDevice.modelData.state === "connected"; onClicked: if (enabled) disconnect.confirm(networkDevice.modelData.name) }
                         Ui.ActionButton { objectName: "homeNetworkConnect" + networkDevice.modelData.name; iconName: "play"; description: "Connect " + networkDevice.modelData.name; visible: networkDevice.modelData.type === "ethernet" && networkDevice.modelData.state === "disconnected"; enabled: networkPage.editable && visible; onClicked: if (enabled) page.data.request(["nmcli","device","connect",networkDevice.modelData.name]) }
                     }
+                    Repeater {
+                        model: (networkDevice.modelData.state || "").startsWith("connected") ? [
+                            {key:"ipv4",label:"Internal IPv4",value:(networkDevice.modelData.ipv4 || []).join(", ")},
+                            {key:"ipv6",label:"Internal IPv6",value:(networkDevice.modelData.ipv6 || []).join(", ")},
+                            {key:"gateway",label:"Gateway",value:networkDevice.modelData.gateway || ""}
+                        ] : []
+                        Ui.SettingRow {
+                            id: networkAddress
+                            required property var modelData
+                            label: modelData.label
+                            rowSpacing: 4
+                            Ui.Label { objectName: "homeNetworkAddress" + networkDevice.modelData.name + networkAddress.modelData.key; text: networkAddress.modelData.value || "Not assigned"; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.WrapAnywhere; font.pixelSize: 11 }
+                        }
+                    }
                     Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.Theme.line }
+                }
+                    }
                 }
             }
             Ui.Label { objectName: "homeNetworkEmpty"; visible: !page.data.devices.network.length; text: page.data.live ? "No network devices reported" : "Network data unavailable"; Layout.fillWidth: true; wrapMode: Text.Wrap; color: Ui.Theme.muted; font.pixelSize: 11 }
-            Ui.Label { text: "WI-FI NETWORKS"; font.family: Ui.Theme.displayFont; font.pixelSize: 14; Layout.fillWidth: true }
+            Ui.Label { text: "Available Wi-Fi"; font.family: Ui.Theme.displayFont; font.pixelSize: 14; Layout.fillWidth: true }
             Ui.Label { objectName: "homeNetworkScanState"; visible: !page.data.devices.wifi || !(page.data.devices.accessPoints || []).length; text: !page.data.live || !Array.isArray(page.data.devices.accessPoints) ? "Network scan unavailable" : !page.data.devices.wifi ? "Wi-Fi off" : "No networks reported"; color: Ui.Theme.muted; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 11 }
             Repeater {
                 model: page.data.devices.wifi ? page.data.devices.accessPoints || [] : []
@@ -471,7 +530,7 @@ ScrollView {
                 }
             }
             Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.Theme.line }
-            Ui.Label { text: "SAVED WI-FI"; font.family: Ui.Theme.displayFont; font.pixelSize: 14; Layout.fillWidth: true }
+            Ui.Label { text: "Saved Wi-Fi"; font.family: Ui.Theme.displayFont; font.pixelSize: 14; Layout.fillWidth: true }
             Ui.Label { objectName: "homeNetworkSavedState"; visible: !(page.data.devices.savedNetworks || []).length; text: !page.data.live || !Array.isArray(page.data.devices.savedNetworks) ? "Saved connections unavailable" : "No saved connections"; color: Ui.Theme.muted; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 11 }
             Repeater {
                 model: page.data.devices.savedNetworks || []

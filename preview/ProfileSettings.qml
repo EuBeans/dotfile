@@ -4,6 +4,7 @@ import QtCore
 QtObject {
     id: settings
     objectName: "profileSettings"
+    property url settingsLocation: StandardPaths.writableLocation(StandardPaths.GenericConfigLocation) + "/quickshell-preview/profiles.ini"
     property alias glassEnabled: storage.glassEnabled
     property alias floatingPanels: storage.floatingPanels
     property alias floatingLeftBar: storage.floatingLeftBar
@@ -70,7 +71,7 @@ QtObject {
     }
     property Settings storage: Settings {
         id: storage
-        location: StandardPaths.writableLocation(StandardPaths.GenericConfigLocation) + "/quickshell-preview/profiles.ini"
+        location: settings.settingsLocation
         property string records: ""
         property int schemaVersion: 1
         property string selected: "Work"
@@ -115,6 +116,9 @@ QtObject {
                         !Number.isInteger(entry.wallpaper) || entry.wallpaper < 0 || entry.wallpaper > 2 ||
                         (entry.wallpaperFile !== undefined && (typeof entry.wallpaperFile !== "string" || (entry.wallpaperFile !== "" && !entry.wallpaperFile.startsWith("file:///"))))) throw new Error("Invalid profile");
                     names.add(entry.name.toLowerCase());
+                    if (entry.paletteMonitor !== undefined && entry.paletteMonitor !== "" && !validWallpaperMonitor(entry.paletteMonitor)) throw new Error("Invalid palette monitor");
+                    if (entry.wallpaperFiles !== undefined && (!entry.wallpaperFiles || typeof entry.wallpaperFiles !== "object" || Array.isArray(entry.wallpaperFiles) ||
+                        Object.entries(entry.wallpaperFiles).some(([monitor, file]) => !validWallpaperMonitor(monitor) || typeof file !== "string" || !file.startsWith("file:///")))) throw new Error("Invalid monitor wallpapers");
                     for (const category of categories) {
                         if (entry[category] !== undefined && (!entry[category] || typeof entry[category] !== "object" || Array.isArray(entry[category]))) throw new Error("Invalid profile category");
                     }
@@ -215,8 +219,8 @@ QtObject {
         let destination = clone(currentProfile);
         for (const category of selectedCategories) destination[category] = clone(source[category]);
         if (selectedCategories.includes("appearance")) {
-            for (const key of ["palette", "source", "wallpaper", "wallpaperFile"]) {
-                if (source[key] !== undefined) destination[key] = source[key];
+            for (const key of ["palette", "source", "wallpaper", "wallpaperFile", "wallpaperFiles", "paletteMonitor"]) {
+                if (source[key] !== undefined) destination[key] = clone(source[key]);
                 else delete destination[key];
             }
         }
@@ -269,7 +273,29 @@ QtObject {
     function selectWallpaper(index, file) {
         if (!Number.isInteger(index) || index < 0 || index > 2) return;
         if (typeof file !== "string" || (file !== "" && !file.startsWith("file:///"))) return;
-        profiles = profiles.map(entry => entry.name === activeName ? Object.assign({}, entry, {wallpaper: index, wallpaperFile: file}) : entry);
+        profiles = profiles.map(entry => entry.name === activeName ? Object.assign({}, entry, {wallpaper: index, wallpaperFile: file, wallpaperFiles: {}, paletteMonitor: ""}) : entry);
+    }
+    function validWallpaperMonitor(monitor) {
+        return typeof monitor === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(monitor) && !["constructor", "prototype"].includes(monitor);
+    }
+    function wallpaperForMonitor(monitor, fallback) {
+        const files = currentProfile.wallpaperFiles || {};
+        return Object.prototype.hasOwnProperty.call(files, monitor) ? files[monitor] : fallback;
+    }
+    function useWallpaperPalette(monitor) {
+        if (monitor !== "" && !validWallpaperMonitor(monitor)) return;
+        profiles = profiles.map(entry => entry.name === activeName ? Object.assign({}, entry, {source: "Wallpaper", paletteMonitor: monitor}) : entry);
+    }
+    function paletteWallpaperSource(fallback) {
+        return wallpaperForMonitor(currentProfile.paletteMonitor || "", fallback);
+    }
+    function selectMonitorWallpaper(monitor, file) {
+        if (!validWallpaperMonitor(monitor) || typeof file !== "string" || (file !== "" && !file.startsWith("file:///"))) return;
+        const files = Object.assign({}, currentProfile.wallpaperFiles || {});
+        if (file) files[monitor] = file;
+        else delete files[monitor];
+        const paletteTarget = file && currentProfile.source === "Wallpaper" ? {paletteMonitor: monitor} : {};
+        profiles = profiles.map(entry => entry.name === activeName ? Object.assign({}, entry, {wallpaperFiles: files}, paletteTarget) : entry);
     }
     function add(name, sourceName) {
         const clean = name.trim();

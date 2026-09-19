@@ -1,1 +1,15 @@
 singleton Theme 1.0 Theme.qml
+ActionButton 1.0 ActionButton.qml
+Dropdown 1.0 Dropdown.qml
+HistoryGraph 1.0 HistoryGraph.qml
+Hint 1.0 Hint.qml
+Label 1.0 Label.qml
+NotchSurface 1.0 NotchSurface.qml
+RetroDrawer 1.0 RetroDrawer.qml
+SegmentedMeter 1.0 SegmentedMeter.qml
+SettingRow 1.0 SettingRow.qml
+SettingsSection 1.0 SettingsSection.qml
+TextField 1.0 TextField.qml
+Toggle 1.0 Toggle.qml
+ValueControl 1.0 ValueControl.qml
+ValueSlider 1.0 ValueSlider.qml

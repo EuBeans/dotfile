@@ -6,6 +6,8 @@ Rectangle {
     id: panel
     property string pendingAction: ""
     property string lastAction: ""
+    property bool production: false
+    property bool actionsEnabled: true
     signal actionRequested(string action)
     signal closeRequested()
     color: Ui.Theme.surface
@@ -31,6 +33,7 @@ Rectangle {
                 required property string modelData
                 objectName: "power" + modelData.replace(/ /g, "")
                 text: modelData
+                enabled: panel.actionsEnabled
                 Layout.fillWidth: true
                 visible: panel.pendingAction === ""
                 onClicked: panel.pendingAction = modelData
@@ -40,8 +43,8 @@ Rectangle {
         RowLayout {
             visible: panel.pendingAction !== ""
             Ui.ActionButton { objectName: "powerCancel"; text: "Cancel"; onClicked: panel.pendingAction = "" }
-            Ui.ActionButton { objectName: "powerConfirm"; text: "Confirm"; onClicked: { panel.actionRequested(panel.pendingAction); panel.pendingAction = ""; } }
+            Ui.ActionButton { objectName: "powerConfirm"; text: "Confirm"; enabled: panel.actionsEnabled && panel.pendingAction !== ""; onClicked: { panel.actionRequested(panel.pendingAction); panel.pendingAction = ""; } }
         }
-        Ui.Label { text: panel.lastAction ? "Preview: " + panel.lastAction : ""; visible: panel.lastAction !== ""; color: Ui.Theme.muted; Layout.fillWidth: true }
+        Ui.Label { text: panel.lastAction ? (panel.production ? "" : "Preview: ") + panel.lastAction : ""; visible: panel.lastAction !== ""; color: Ui.Theme.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
     }
 }

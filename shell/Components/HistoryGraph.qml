@@ -6,7 +6,8 @@ ColumnLayout {
     id: graph
     required property string title
     property var series: []
-    readonly property var lineColors: series.map((entry, index) => Theme.chartColor(index))
+    property int colorOffset: 0
+    readonly property var lineColors: series.map((entry, index) => Theme.chartColor(index + colorOffset))
     readonly property bool current: series.some(entry => entry.current)
     readonly property string reading: current ? series.map(entry => entry.title + ": " + entry.reading).join(", ") : "Unavailable"
     function lineColor(index) {
@@ -21,7 +22,13 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         Label { text: graph.title; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.WrapAnywhere; font.family: Theme.displayFont; font.pixelSize: 14 }
-        Label { text: graph.current ? "Live" : "Unavailable"; color: Theme.muted; font.pixelSize: 10 }
+        Rectangle {
+            Layout.preferredWidth: 6
+            Layout.preferredHeight: 6
+            radius: 3
+            color: graph.current ? Theme.chartColor(2) : Theme.muted
+            Accessible.name: graph.current ? "Live" : "Unavailable"
+        }
     }
     Canvas {
         id: plot
@@ -96,9 +103,9 @@ ColumnLayout {
                     text: modelData.reading
                     font.family: Theme.textFont
                     font.pixelSize: 11
-                    palette.buttonText: modelData.current ? Theme.paper : Theme.muted
-                    palette.highlight: modelData.current ? Theme.paper : Theme.muted
-                    palette.highlightedText: modelData.current ? Theme.paper : Theme.muted
+                    palette.buttonText: modelData.current ? graph.lineColor(index) : Theme.muted
+                    palette.highlight: modelData.current ? graph.lineColor(index) : Theme.muted
+                    palette.highlightedText: modelData.current ? graph.lineColor(index) : Theme.muted
                     TextMetrics {
                         id: readoutSize
                         font: metricIcon.font
@@ -125,27 +132,6 @@ ColumnLayout {
                         border.width: metricIcon.activeFocus ? Theme.controlBorderWidth(metricIcon) : 0
                         border.pixelAligned: false
                         border.color: Theme.paper
-                    }
-                    Controls.ToolTip {
-                        objectName: metricIcon.objectName + "Details"
-                        visible: metricIcon.hovered || metricIcon.activeFocus
-                        delay: 0
-                        timeout: -1
-                        scale: {
-                            let inheritedScale = 1;
-                            let ancestor = metricIcon;
-                            while (ancestor) {
-                                inheritedScale *= ancestor.scale;
-                                ancestor = ancestor.parent;
-                            }
-                            return inheritedScale;
-                        }
-                        transformOrigin: Controls.Popup.TopLeft
-                        x: -metricIcon.x + iconLegend.contentX
-                        width: Math.min(280, graph.width)
-                        text: metricIcon.description
-                        contentItem: Label { text: metricIcon.description; textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere; font.pixelSize: 11 }
-                        background: Rectangle { color: Theme.ink; border.color: Theme.line; radius: Theme.radius }
                     }
                 }
             }

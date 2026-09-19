@@ -53,7 +53,7 @@ Safety: display rollback currently uses an in-process timer, not crash-safe reco
 
 ## 5. Locking, Idle And Local AI
 
-- [ ] Use a real locker such as hyprlock and integrate lock, idle and suspend actions. The existing lock view is a simulation, not authentication; never enter a real password there.
+- [ ] Accept the custom locker's real lock/unlock, multi-monitor and recovery behavior. The production entry uses Wayland session locking and PAM; the standalone preview remains a simulation and must never receive a real password. Idle/suspend integration remains pending.
 - [ ] Decide vLLM version, endpoint, supervisor, model presets, GPU assignments and stop/drain policy using [Local AI](local-ai.md).
 - [ ] Add read-only runtime observations, measured per-GPU telemetry and validated output tokens/sec before enabling lifecycle actions.
 - [ ] Implement start/stop/model switching for explicitly owned instances, including readiness mismatch, timeout, OOM, stale metrics and shell-restart handling.

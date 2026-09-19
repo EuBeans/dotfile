@@ -7,6 +7,7 @@ Rectangle {
     id: panel
     required property var entries
     property bool opened: false
+    property string status: ""
     property bool confirmClear: false
     readonly property var matches: entries.filter(entry => (entry.text + " " + entry.kind).toLowerCase().includes(search.text.trim().toLowerCase())).slice().sort((first, second) => Number(second.pinned) - Number(first.pinned))
     signal copyRequested(int entryId)
@@ -71,7 +72,7 @@ Rectangle {
                 id: entryRow
                 required property var modelData
                 width: history.width
-                height: modelData.kind === "image" ? 156 : 86
+                height: modelData.kind === "image" && modelData.image ? 156 : 86
                 spacing: 8
                 RowLayout {
                     Layout.fillWidth: true
@@ -81,7 +82,7 @@ Rectangle {
                     Ui.ActionButton { objectName: "removeClip" + entryRow.modelData.entryId; iconName: "x"; description: "Delete entry"; onClicked: panel.removeRequested(entryRow.modelData.entryId) }
                 }
                 Image {
-                    visible: entryRow.modelData.kind === "image"
+                    visible: entryRow.modelData.kind === "image" && !!entryRow.modelData.image
                     Layout.fillWidth: true
                     Layout.preferredHeight: 90
                     source: entryRow.modelData.image || ""
@@ -92,7 +93,7 @@ Rectangle {
                 Ui.Label { text: entryRow.modelData.kind === "image" ? "IMAGE" : "TEXT"; font.pixelSize: 10; color: Ui.Theme.muted }
                 Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.Theme.line }
             }
-            Ui.Label { objectName: "clipboardEmptyState"; anchors.centerIn: parent; text: search.text ? "No matching entries" : "Clipboard history is empty"; visible: history.count === 0; color: Ui.Theme.muted }
+            Ui.Label { objectName: "clipboardEmptyState"; anchors.centerIn: parent; text: panel.status || (search.text ? "No matching entries" : "Clipboard history is empty"); visible: history.count === 0; color: Ui.Theme.muted }
         }
     }
 }

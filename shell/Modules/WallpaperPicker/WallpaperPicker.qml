@@ -14,6 +14,10 @@ Rectangle {
     required property var profileSettings
     property bool folderLoading: false
     property int directoryWallpaperCount: 0
+    property var monitorNames: []
+    property string targetMonitor: ""
+    property string paletteStatus: ""
+    onMonitorNamesChanged: if (targetMonitor && !monitorNames.includes(targetMonitor)) targetMonitor = ""
     signal selectedRequested(int index)
     signal closeRequested()
     color: embedded ? Ui.Theme.clear : Ui.Theme.surface
@@ -48,6 +52,28 @@ Rectangle {
             }
         }
         RowLayout {
+            visible: panel.monitorNames.length > 0
+            Layout.fillWidth: true
+            spacing: 8
+            Ui.Label { text: "Display" }
+            Ui.Dropdown {
+                objectName: panel.namePrefix + "wallpaperDisplay"
+                Layout.fillWidth: true
+                Layout.maximumWidth: 320
+                model: ["All displays"].concat(panel.monitorNames)
+                currentIndex: Math.max(0, panel.monitorNames.indexOf(panel.targetMonitor) + 1)
+                Accessible.name: "Wallpaper display"
+                onActivated: index => panel.targetMonitor = index > 0 ? panel.monitorNames[index - 1] : ""
+            }
+            Ui.ActionButton {
+                objectName: panel.namePrefix + "resetMonitorWallpaper"
+                iconName: "x"
+                description: "Use default wallpaper for this display"
+                enabled: panel.targetMonitor !== "" && Object.prototype.hasOwnProperty.call(panel.profileSettings.currentProfile.wallpaperFiles || {}, panel.targetMonitor)
+                onClicked: panel.profileSettings.selectMonitorWallpaper(panel.targetMonitor, "")
+            }
+        }
+        RowLayout {
             visible: panel.showPaletteControls
             Ui.Label { text: "Palette"; Layout.fillWidth: true }
             Repeater {
@@ -57,7 +83,10 @@ Rectangle {
                     objectName: panel.namePrefix + "wallpaperSource" + modelData
                     text: modelData
                     checked: panel.profileSettings.currentProfile.source === modelData
-                    onClicked: panel.profileSettings.update("source", modelData)
+                    onClicked: {
+                        if (modelData === "Wallpaper") panel.profileSettings.useWallpaperPalette(panel.targetMonitor);
+                        else panel.profileSettings.update("source", modelData);
+                    }
                 }
             }
         }
@@ -100,6 +129,14 @@ Rectangle {
                 }
             }
         }
+        Ui.Label {
+            objectName: panel.namePrefix + "wallpaperPaletteStatus"
+            Layout.fillWidth: true
+            visible: panel.showPaletteControls && panel.profileSettings.currentProfile.source === "Wallpaper" && panel.paletteStatus !== ""
+            text: panel.paletteStatus
+            font.pixelSize: 12
+            color: Ui.Theme.muted
+        }
         RowLayout {
             Layout.fillWidth: true
             Ui.Label {
@@ -109,9 +146,6 @@ Rectangle {
                 text: panel.profileSettings.wallpaperDirectory ? decodeURIComponent(panel.profileSettings.wallpaperDirectory.substring(7)) : "Bundled wallpapers"
                 font.pixelSize: 12
                 color: Ui.Theme.muted
-                ToolTip.visible: pathHover.hovered
-                ToolTip.text: text
-                HoverHandler { id: pathHover }
             }
             Ui.ActionButton {
                 objectName: panel.namePrefix + "chooseWallpaperFolder"
@@ -192,8 +226,6 @@ Rectangle {
                             font.pixelSize: 12
                         }
                     }
-                    ToolTip.visible: hovered
-                    ToolTip.text: modelData.name
                     onClicked: {
                         if (thumbnail.status !== Image.Ready) return;
                         grid.currentIndex = index;

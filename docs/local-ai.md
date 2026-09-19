@@ -1,6 +1,26 @@
 # Local AI Panel
 
-Added 2026-09-18. The first implementation is an interactive mock in the WSL preview. No vLLM server is installed, queried, started, stopped or modified by this code.
+Added 2026-09-18. The preview uses synthetic fixtures. The production host now connects to the separate model-manager daemon; it no longer launches the `ai-status.sh` poller.
+
+## Current Production Integration
+
+- Backend: `~/repositories/model-manager`, a Python asyncio daemon supervised by `systemctl --user` as `model-manager.service`. Its README documents installation, presets, CLI commands, ownership, and recovery.
+- Transport: versioned newline-delimited JSON over `$XDG_RUNTIME_DIR/model-manager/control.sock`. `host/Services/ModelManager.qml` reconnects automatically and supplies panel state without spawning status scripts. Socket permissions and peer UID checks restrict access to the current user.
+- The panel lists all configured vLLM/Ollama presets, keeps selected and observed model identities separate, and shows operation progress, runtime metrics, ownership, and OpenCode configuration status. Disconnect/stale state disables actions and throughput, without claiming the runtime stopped.
+- Start/switch verify model readiness before atomically updating OpenCode's default provider/model. Configuration failure is separately visible and can be retried using **Settings > Use in OpenCode** without reloading a model. The panel reports a saved default, not an active-session switch: OpenCode must be restarted, including its v2 background server where applicable. Project configuration, session selections, and agent model pins may override the global default. The canonical `opencode-setup` repo intentionally pins Orchestraor to its OpenAI model; model-manager preserves that routing and all permission/MCP/plugin settings.
+- Existing containers remain external/read-only until the pin action is explicitly confirmed. Adoption records the verified container ID without restarting it. Stop/switch require interruption confirmation and manage only owned instances. A global operation lock prevents concurrent lifecycle changes.
+- OpenClaw integration is deprecated: no automatic configuration reads/writes, restarts, or deletion. Its existing deployment is left untouched.
+- Images/weights are not downloaded automatically. Newly created runtime containers do not auto-restart. Daemon startup performs discovery only; interrupted operations are reconciled rather than replayed.
+
+The picker defaults to the last verified model, persisted by model-manager across stops/restarts. The gear opens settings independently of runtime availability. Each desktop profile can override the default preset or inherit **Last loaded**; changing a profile/default does not switch or start a runtime automatically. **Use in OpenCode** is a separate explicit command inside settings. The restart icon supports the already-selected loaded model as well as switching to another one, with interruption confirmation in both cases.
+
+Startup shows stage-specific progress, elapsed time, and vLLM's real shard/graph percentages when available. Compilation, initialization, and Ollama loading use an indeterminate bar rather than an invented overall percentage. A newly started owned container is **Starting**, not **Unreachable**; losing an already-ready endpoint remains a connectivity failure. Recognized KV-cache/OOM failures produce sanitized actionable errors. Qwen3.8's runtime and client context were reduced together to 180,000 tokens with user approval after 195,000 exceeded available KV-cache memory.
+
+The panel uses compact unframed sections and content-fitted drawers in both preview and production. Battery meters are 28px high. Native tests cover settings/restart clicks, measured/unknown progress, and actual drawer widths of 320, 375, 414, and 768 pixels.
+
+GPU telemetry continues to use the existing desktop sampler. Ollama request/token rates and inference-driven suspend inhibition are not implemented. The older architecture/acceptance sections below remain the broader target, not claims that every item is complete.
+
+Verification: model-manager unit tests use fake runtimes and temporary client configs; `tests/test_model_manager.py` exercises actual Quickshell sockets with late server startup, replies, external-runtime guards, and reconnection. Existing preview lifecycle/meter tests remain applicable. Live discovery and non-disruptive client configuration can be verified without unloading a model; real model switching still requires a disruptive acceptance run.
 
 ## Confirmed Scope
 
@@ -63,6 +83,6 @@ Switching may temporarily unload the previous model and fail to load the next. R
 
 Preview tests cover panel activation, both GPU meters, stop cancellation/confirmation, disabled actions during transitions, start/switch success, launch failure, unavailable telemetry, invalid/underflow/overflow meter values and screenshot capture. Production tests must add process ownership, duplicate actions, active requests, readiness mismatch, OOM, GPU disappearance, metrics timeout/reset, shell restart during transitions, counter aggregation and suspend-inhibitor release.
 
-## Decisions Still Needed
+## Remaining Decisions
 
-How vLLM is launched (user service, container or another supervisor); installed version and endpoint; actual local model inventory; GPU assignment per model; one server versus multiple servers; graceful draining versus explicit interruption; sampling/rate window; whether process rows/history are useful. No hardware or runtime choices are implied by the mock.
+Pin the deployed runtime image/version; choose GPU UUID assignments per preset; validate real stop/switch and failure recovery on the GPUs; decide whether true draining/proxy admission control is needed; determine whether process rows/history and suspend inhibition are useful. The current workflow serializes operations globally, uses explicit interruption confirmation, and does not infer that heterogeneous GPUs can pool their memory.

@@ -34,6 +34,10 @@ if [[ "$mode" == telemetry ]]; then
         if raw=$(timeout 3 nvidia-smi --query-gpu=uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null); then
             gpus=$(jq -Rn '[inputs | select(length>0) | split(",") | map(gsub("^ +| +$";"")) | {id:.[0], name:.[1:-5]|join(","), utilization:(.[-5]|tonumber? // null), usedMiB:(.[-4]|tonumber? // null), totalMiB:(.[-3]|tonumber? // null), temperature:(.[-2]|tonumber? // null), power:(.[-1]|tonumber? // null)}]' <<<"$raw")
         fi
+        if raw=$(timeout 3 nvidia-smi --query-gpu=uuid,driver_version,pci.bus_id,clocks.current.graphics,power.limit,fan.speed --format=csv,noheader,nounits 2>/dev/null); then
+            details=$(jq -Rn '[inputs | select(length>0) | split(",") | map(gsub("^ +| +$";"")) | {id:.[0], driver:(.[1] | if . == "[N/A]" or . == "N/A" then null else . end), pciAddress:(.[2] | if . == "[N/A]" or . == "N/A" then null else . end), coreClock:(.[3]|tonumber? // null), powerLimit:(.[4]|tonumber? // null), fanSpeed:(.[5]|tonumber? // null)}]' <<<"$raw")
+            gpus=$(jq --argjson details "$details" 'INDEX($details[]; .id) as $metadata | map(. + ($metadata[.id] // {}))' <<<"$gpus")
+        fi
         if raw=$(timeout 3 nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits 2>/dev/null); then
             processes=$(jq -Rn '[inputs | select(length>0) | split(",") | map(gsub("^ +| +$";"")) | {gpu:.[0], pid:.[1], name:.[2:-1]|join(","), memoryMiB:(.[-1]|tonumber? // null)}]' <<<"$raw")
         fi
@@ -50,6 +54,13 @@ elif [[ "$mode" == devices ]]; then
     audio=$(optional_json pactl -f json info)
     drives=$(optional_json lsblk --json --bytes --output NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS,FSAVAIL,FSUSE%)
     devices=$(timeout 3 nmcli -t --escape no -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null | jq -Rn '[inputs | split(":") | {name:.[0],type:.[1],state:.[2],connection:(.[3:]|join(":"))}]' || printf '[]')
+    addresses=$(optional_json ip -j address show)
+    routes=$(optional_json ip -j route show default)
+    devices=$(jq --argjson addresses "$addresses" --argjson routes "$routes" 'map(. as $device |
+        ([$addresses[]? | select(.ifname == $device.name) | .addr_info[]?]) as $ips |
+        . + {ipv4:[$ips[] | select(.family == "inet") | .local + "/" + (.prefixlen|tostring)],
+             ipv6:[$ips[] | select(.family == "inet6") | .local + "/" + (.prefixlen|tostring)],
+             gateway:([$routes[]? | select(.dev == $device.name) | .gateway // empty][0] // "")} )' <<<"$devices")
     wifi=$(timeout 3 nmcli radio wifi 2>/dev/null || true)
     profile=$(timeout 3 powerprofilesctl get 2>/dev/null || true)
     profiles=$(timeout 3 powerprofilesctl list 2>/dev/null | awk '/^[ *]+[a-z-]+:/ {gsub("[* : ]", ""); print}' | jq -Rn '[inputs]' || printf '[]')

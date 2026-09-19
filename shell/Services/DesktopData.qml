@@ -4,7 +4,12 @@ QtObject {
     id: data
     property bool live: false
     property bool controlsEnabled: false
+    property bool displayControlsEnabled: controlsEnabled
     property bool busy: false
+    property string publicAddress: ""
+    property string publicAddressStatus: "Not checked"
+    property bool publicAddressBusy: false
+    signal publicAddressRequested()
     property string status: "Live services are unavailable in the native preview"
     property var devices: ({monitors:[],sinks:[],sources:[],streams:[],audio:null,drives:[],network:[],accessPoints:[],wifi:false,powerProfiles:[],powerProfile:"",batteries:[],host:"",kernel:"",cpu:""})
     property var snapshot: ({gpus:[],processes:[],memory:{},network:[],load:[]})
@@ -26,6 +31,7 @@ QtObject {
     signal weatherRequested(string latitude, string longitude)
     signal mediaRequested(int index, string action)
     signal displayRequested(var monitor, string mode, real scale, int transform)
+    signal displayArrangementRequested(var positions)
     signal displayConfirmed()
     signal displayReverted()
     property Timer freshness: Timer { interval: 1000; running: true; repeat: true; onTriggered: data.clock = Date.now() }
@@ -60,7 +66,7 @@ QtObject {
             next.push(Object.assign({},device,{key:gpu.id+"usage",title:gpu.name+" / Usage",value:gpu.utilization,unit:"%",maximum:100}));
             next.push(Object.assign({},device,{key:gpu.id+"vram",title:gpu.name+" / VRAM",value:gpu.usedMiB,unit:" MiB",maximum:gpu.totalMiB || 1}));
             next.push(Object.assign({},device,{key:gpu.id+"temp",title:gpu.name+" / Temperature",value:gpu.temperature,unit:" C",maximum:110}));
-            next.push(Object.assign({},device,{key:gpu.id+"power",title:gpu.name+" / Power",value:gpu.power,unit:" W",maximum:Math.max(100,gpu.power || 0)}));
+            next.push(Object.assign({},device,{key:gpu.id+"power",title:gpu.name+" / Power",value:gpu.power,unit:" W",maximum:Math.max(100,gpu.powerLimit || 0,gpu.power || 0)}));
         }
         if (!sample.gpus.length) {
             next.push({key:"gpu",title:"GPU usage",value:null,unit:"%",maximum:100});

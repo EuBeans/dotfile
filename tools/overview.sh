@@ -29,6 +29,15 @@ else
 fi
 
 if [[ "$action" == start ]]; then
+    keyboard_patch="$repo_root/tools/overview-keyboard.patch"
+    overview_directory="$repo_root/third_party/quickshell-overview"
+    if ! git -C "$overview_directory" apply --reverse --check "$keyboard_patch" 2>/dev/null; then
+        if ! git -C "$overview_directory" apply --check "$keyboard_patch"; then
+            printf 'Overview keyboard patch conflicts with local changes; no files were replaced.\n' >&2
+            exit 1
+        fi
+        git -C "$overview_directory" apply "$keyboard_patch"
+    fi
     exec "$executable" -p "$overview_path" -n
 fi
 exec "$executable" ipc -p "$overview_path" call overview "$action"

@@ -15,6 +15,8 @@ Rectangle {
     required property var service
     required property var shortcuts
     property bool opened: false
+    property bool production: false
+    property Component settingsContent: null
     property string page: "Home"
     readonly property bool personalizing: ["Appearance", "Wallpaper", "Profiles"].includes(page)
     property int timerDraftSeconds: 300
@@ -59,16 +61,13 @@ Rectangle {
             ColumnLayout {
                 anchors.fill: parent
                 spacing: 8
-                ScrollView {
+                Item {
                     id: navigation
                     objectName: "homeNavigation"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    contentWidth: availableWidth
-                    clip: true
-                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                     ColumnLayout {
-                        width: navigation.availableWidth
+                        width: navigation.width
                         spacing: 6
                         Repeater {
                             model: [
@@ -86,7 +85,8 @@ Rectangle {
                                 objectName: modelData.name
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
-                                Layout.preferredHeight: 42
+                                Layout.minimumHeight: 0
+                                Layout.preferredHeight: Math.max(0, Math.min(42, (navigation.height - 42) / 8))
                                 iconName: modelData.icon
                                 iconOnly: true
                                 text: modelData.label
@@ -102,6 +102,7 @@ Rectangle {
                 Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.Theme.line }
                 Ui.ActionButton {
                     objectName: "homeSettings"
+                    enabled: !panel.production || panel.settingsContent !== null
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
                     Layout.preferredHeight: 42
@@ -221,7 +222,7 @@ Rectangle {
                         objectName: "homeProfileHeader"
                         visible: panel.page === "Home"
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 96
+                        Layout.preferredHeight: 72
                         Image {
                             objectName: "homeWallpaperBackground"
                             anchors.fill: parent
@@ -247,7 +248,6 @@ Rectangle {
                             anchors.bottomMargin: 8
                             spacing: 4
                             Ui.Label { text: panel.service.profile; font.family: Ui.Theme.displayFont; font.pixelSize: 16; Layout.fillWidth: true }
-                            Ui.Label { text: "Preview session"; color: Ui.Theme.muted; font.pixelSize: 11; Layout.fillWidth: true }
                             Ui.Label { text: panel.service.selectedWallpaper.name; color: Ui.Theme.muted; font.pixelSize: 11; Layout.fillWidth: true }
                         }
                         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Ui.Theme.line }
@@ -337,7 +337,8 @@ Rectangle {
                                     width: Math.max(0, Math.floor((quickTiles.width - quickTiles.columnSpacing * (quickTiles.columns - 1)) / quickTiles.columns))
                                     height: 64
                                     text: modelData.label
-                                    description: modelData.label + (checked ? ": on" : ": off") + " / Preview only"
+                                    enabled: !panel.production || (panel.service.desktopData.controlsEnabled && !panel.service.desktopData.busy)
+                                    description: modelData.label + (checked ? ": on" : ": off") + (panel.production ? (enabled ? "" : " / Unavailable or read only") : " / Preview only")
                                     checkable: true
                                     checked: panel.service[modelData.key]
                                     Accessible.role: Accessible.CheckBox
@@ -381,7 +382,10 @@ Rectangle {
                                             color: quickTile.checked || quickTile.down ? Ui.Theme.ink : Ui.Theme.paper
                                         }
                                     }
-                                    onToggled: panel.toggleRequested(modelData.key, checked)
+                                    onToggled: {
+                                        panel.toggleRequested(modelData.key, checked);
+                                        checked = Qt.binding(() => panel.service[modelData.key]);
+                                    }
                                 }
                             }
                         }
@@ -390,17 +394,10 @@ Rectangle {
                         visible: panel.page === "Home"
                         Layout.fillWidth: true
                         spacing: 8
-                        Ui.Label { text: "Output"; font.pixelSize: 11 }
-                        Ui.ValueSlider { objectName: "controlVolume"; Layout.fillWidth: true; from: 0; to: 100; stepSize: 1; value: panel.service.volume; Accessible.name: "Output volume"; onMoved: panel.volumeRequested(Math.round(value)) }
-                        Ui.Label { text: panel.service.outputMuted ? "Muted" : panel.service.volume + "%"; Layout.preferredWidth: 42; horizontalAlignment: Text.AlignRight; font.pixelSize: 11; color: panel.service.outputMuted ? Ui.Theme.muted : Ui.Theme.paper }
-                    }
-                    RowLayout {
-                        visible: panel.page === "Home"
-                        Layout.fillWidth: true
-                        spacing: 8
                         Ui.Label { text: "Profile"; color: Ui.Theme.muted; font.pixelSize: 11 }
                         Ui.Dropdown {
                             objectName: "homeProfile"
+                            enabled: !panel.production || panel.service.desktopData.controlsEnabled
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
                             Layout.maximumWidth: 200
@@ -410,7 +407,7 @@ Rectangle {
                             Accessible.name: "Profile"
                             onActivated: panel.profileRequested(currentText)
                         }
-                        Ui.ActionButton { objectName: "homeActivities"; iconName: "timer"; description: "Activities"; onClicked: panel.page = "Activities" }
+                        Ui.ActionButton { objectName: "homeActivities"; visible: !panel.production; iconName: "timer"; description: "Activities"; onClicked: panel.page = "Activities" }
                     }
                     ColumnLayout {
                         visible: panel.page === "Connections"
@@ -506,7 +503,7 @@ Rectangle {
         objectName: "homeDisplayConfirmation"
         parent: Overlay.overlay
         anchors.centerIn: parent
-        width: Math.min(360, parent.width - 24)
+        width: Math.min(360, parent ? parent.width - 24 : 360)
         modal: true
         closePolicy: Popup.NoAutoClose
         visible: panel.service.desktopData.displayPending
@@ -562,15 +559,21 @@ Rectangle {
     Component {
         id: wallpaperPage
         WallpaperPicker {
+            id: embeddedWallpaperPicker
             embedded: true
             showPaletteControls: false
             namePrefix: "home_"
             wallpapers: panel.service.wallpapers
-            selected: panel.service.wallpaper
+            monitorNames: panel.production ? panel.service.wallpaperMonitors : []
+            targetMonitor: panel.production ? panel.service.homeScreen : ""
+            selected: panel.production ? panel.service.wallpaperIndexForMonitor(targetMonitor) : panel.service.wallpaper
             profileSettings: panel.service.profileSettings
             folderLoading: panel.service.wallpaperFolderLoading
             directoryWallpaperCount: panel.service.directoryWallpapers.length
-            onSelectedRequested: index => panel.wallpaperSelected(index)
+            onSelectedRequested: index => {
+                if (panel.production) panel.service.setWallpaper(index, embeddedWallpaperPicker.targetMonitor);
+                else panel.wallpaperSelected(index);
+            }
         }
     }
     Component {
@@ -618,6 +621,10 @@ Rectangle {
     }
     Component {
         id: settingsPage
+        Loader { sourceComponent: panel.settingsContent || defaultSettingsPage }
+    }
+    Component {
+        id: defaultSettingsPage
         SettingsView {
             embedded: true
             service: panel.service

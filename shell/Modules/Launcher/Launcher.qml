@@ -13,14 +13,15 @@ Rectangle {
     property var files: []
     property bool fileSearchAvailable: false
     property string mode: "Apps"
-    readonly property var modes: ["Apps", "Run", "Files", "Windows"]
+    property var modes: ["Apps", "Run", "Files", "Windows"]
+    property url settingsLocation: StandardPaths.writableLocation(StandardPaths.GenericConfigLocation) + "/quickshell-preview/launcher.ini"
     property bool opened: false
     property bool favoritesOnly: false
     property var favoriteIds: []
     property var recentIds: []
     Settings {
         id: storage
-        location: StandardPaths.writableLocation(StandardPaths.GenericConfigLocation) + "/quickshell-preview/launcher.ini"
+        location: panel.settingsLocation
         property string favoritesJson: "[]"
         property string recentJson: "[]"
     }
@@ -53,7 +54,7 @@ Rectangle {
         if (mode === "Files") return fileSearchAvailable ? files.filter(file => tokens.every(token => (file.name + " " + file.path).toLowerCase().includes(token))) : [];
         if (mode === "Windows") return windows.map(window => {
             const app = applications.find(entry => entry.appId === window.appId);
-            return {windowId: window.windowId, name: window.title, detail: [app ? app.name : window.appId, window.subtitle, window.monitor, "Workspace " + window.workspace].join(" / "), icon: app ? app.icon : "monitor"};
+            return {windowId: window.windowId, name: window.title, detail: [app ? app.name : window.appId, window.subtitle, window.monitor, "Workspace " + window.workspace].join(" / "), icon: app ? app.icon : "monitor", iconSource: app ? app.iconSource || "" : ""};
         }).filter(window => tokens.every(token => (window.name + " " + window.detail).toLowerCase().includes(token)));
         const matches = applications.filter(app => {
             const text = (app.name + " " + app.category + " " + app.keywords).toLowerCase();
@@ -242,7 +243,7 @@ Rectangle {
                         padding: 4
                         font.pixelSize: panel.width < 400 ? 11 : 13
                         iconOnly: false
-                        iconName: panel.width < 400 ? "" : ["panels-top-left", "chevron-right", "folder-open", "monitor"][index]
+                        iconName: panel.width < 400 ? "" : ({Apps: "panels-top-left", Run: "chevron-right", Files: "folder-open", Windows: "monitor"})[modelData]
                         icon.color: Ui.Theme.paper
                         palette.buttonText: Ui.Theme.paper
                         palette.brightText: Ui.Theme.paper
@@ -338,8 +339,8 @@ Rectangle {
                                 objectName: "launcherIcon_" + (appTile.modelData.appId || appTile.index)
                                 Layout.preferredWidth: 20
                                 Layout.preferredHeight: 20
-                                source: Qt.resolvedUrl("../../Assets/Icons/" + (appTile.modelData.icon || "folder-open") + ".svg")
-                                color: appButton.checked || appButton.down ? Ui.Theme.ink : Ui.Theme.paper
+                                source: appTile.modelData.iconSource || Qt.resolvedUrl("../../Assets/Icons/" + (appTile.modelData.icon || "folder-open") + ".svg")
+                                color: appTile.modelData.iconSource ? "transparent" : appButton.checked || appButton.down ? Ui.Theme.ink : Ui.Theme.paper
                             }
                             Ui.Label {
                                 objectName: "launcherResultLabel_" + appTile.index

@@ -79,7 +79,7 @@ Item {
     WallpaperPalette {
         id: wallpaperPalette
         objectName: "wallpaperPalette"
-        source: desktop.state.selectedWallpaper.source
+        source: desktop.state.profileSettings.paletteWallpaperSource(String(desktop.state.selectedWallpaper.source))
         extractionEnabled: desktop.state.profileSettings.currentProfile.source === "Wallpaper"
     }
     Binding { target: desktop.state.profileSettings; property: "sampledPalette"; value: wallpaperPalette.palette }
@@ -201,6 +201,7 @@ Item {
         onProfileRequested: desktop.nextProfile()
         onWallpaperRequested: desktop.togglePanel("wallpaper")
         onVolumeRequested: desktop.togglePanel("volume")
+        onOutputVolumeRequested: value => desktop.state.volume = value
         onAiRequested: desktop.togglePanel("ai")
         onGpuRequested: index => {
             const closing = desktop.openPanel === "gpu" && desktop.selectedGpu === index;
@@ -227,6 +228,7 @@ Item {
         onLauncherRequested: desktop.togglePanel("launcher")
         onCaptureRequested: { desktop.openPanel = ""; desktop.screenshotRequested(); }
         onWorkspaceOverviewRequested: desktop.requestWorkspaceOverview()
+        onWindowCloseRequested: windowId => desktop.state.windowManager.close(windowId)
         onFocusRequested: windowId => {
             desktop.state.windowManager.focus(windowId);
             tiling.shown = true;
@@ -389,12 +391,11 @@ Item {
     Ui.RetroDrawer {
         objectName: "aiDrawer"
         anchors.top: bar.bottom
-        anchors.bottom: parent.bottom
         anchors.right: parent.right
         anchors.topMargin: Ui.Theme.floatingPanels ? 16 : 0
         anchors.rightMargin: Ui.Theme.floatingPanels ? 16 : 0
-        anchors.bottomMargin: Ui.Theme.floatingPanels ? 16 : 0
         width: aiPanel.implicitWidth
+        height: Math.min(aiPanel.implicitHeight, desktop.height - bar.height - 32)
         edge: "right"
         opened: desktop.openPanel === "ai"
         reducedMotion: desktop.state.reducedMotion
@@ -427,11 +428,13 @@ Item {
             objectName: "wallpaperPanelSurface"
             anchors.fill: parent
             wallpapers: desktop.state.wallpapers
-            selected: desktop.state.wallpaper
+            monitorNames: desktop.state.wallpaperMonitors
+            selected: desktop.state.wallpaperIndexForMonitor(targetMonitor)
             profileSettings: desktop.state.profileSettings
+            paletteStatus: wallpaperPalette.status
             folderLoading: desktop.state.wallpaperFolderLoading
             directoryWallpaperCount: desktop.state.directoryWallpapers.length
-            onSelectedRequested: index => desktop.state.setWallpaper(index)
+            onSelectedRequested: index => desktop.state.setWallpaper(index, wallpaperPanel.targetMonitor)
             onCloseRequested: desktop.openPanel = ""
         }
     }

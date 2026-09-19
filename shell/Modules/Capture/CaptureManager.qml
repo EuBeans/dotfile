@@ -115,8 +115,6 @@ Rectangle {
                 background: Rectangle { color: modelData.captureId === panel.service.selectedId ? Ui.Theme.paper : Ui.Theme.groupSurface; radius: Ui.Theme.radius }
                 contentItem: Image { source: modelData.source; fillMode: Image.PreserveAspectFit }
                 onClicked: panel.service.selectedId = modelData.captureId
-                ToolTip.visible: hovered
-                ToolTip.text: modelData.name + (modelData.pinned ? " / Pinned" : "")
             }
         }
         Ui.Label { objectName: "captureStatus"; Layout.fillWidth: true; wrapMode: Text.WordWrap; text: panel.service.error || "Preview desktop / " + panel.service.status; color: Ui.Theme.muted; font.pixelSize: 11 }

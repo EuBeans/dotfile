@@ -96,7 +96,8 @@ def main() -> int:
     def finish() -> None:
         if args.capture:
             args.capture.parent.mkdir(parents=True, exist_ok=True)
-            image = engine.rootObjects()[0].grabWindow()
+            window = engine.rootObjects()[0]
+            image = window.screen().grabWindow(window.winId())
             if image.isNull() or not image.save(str(args.capture)):
                 warnings.append("Screenshot capture failed")
         app.quit()

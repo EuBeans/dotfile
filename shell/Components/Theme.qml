@@ -20,10 +20,11 @@ QtObject {
     readonly property color accent: palette.accent
     readonly property color chartPrimary: Qt.rgba((paper.r + accent.r) / 2, (paper.g + accent.g) / 2, (paper.b + accent.b) / 2, 1)
     function chartColor(index) {
-        const weight = (index % 4) / 3;
-        return Qt.rgba(chartPrimary.r * (1 - weight) + muted.r * weight,
-                       chartPrimary.g * (1 - weight) + muted.g * weight,
-                       chartPrimary.b * (1 - weight) + muted.b * weight, 1);
+        const lightSurface = 0.2126 * ink.r + 0.7152 * ink.g + 0.0722 * ink.b > 0.5;
+        const colors = lightSurface
+            ? ["#006eaa", "#a55b00", "#187345", "#a53570"]
+            : ["#56c8ff", "#f2c45e", "#7ed9a3", "#ef8fbf"];
+        return colors[index % colors.length];
     }
     readonly property color groupSurface: Qt.lighter(ink, 1.5)
     property bool glassEnabled: true
@@ -32,6 +33,9 @@ QtObject {
     property int barRadius: 8
     property int windowRadius: 8
     property string animationStyle: "Stepped"
+    function animatedProgress(value) {
+        return animationStyle === "Stepped" ? Math.floor(value * 6) / 6 : value;
+    }
     property int animationDuration: 240
     property int panelOpacity: 84
     property int windowOpacity: 92

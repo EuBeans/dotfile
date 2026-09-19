@@ -58,8 +58,6 @@ Rectangle {
                     Layout.preferredWidth: 114
                     checked: fixtures.mediaAvailable && fixtures.playing
                     Accessible.name: "Preview music playback"
-                    ToolTip.visible: hovered
-                    ToolTip.text: "Simulate music playback on or off"
                     onToggled: {
                         const requestedPlayback = checked;
                         if (requestedPlayback) fixtures.mediaAvailable = true;

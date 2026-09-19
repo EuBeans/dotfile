@@ -7,7 +7,11 @@ Item {
     property string recording: ""
     property string error: ""
     property var overrides: ({})
-    readonly property var actions: [
+    property bool nativeBackend: false
+    property bool busy: false
+    property bool ready: !nativeBackend
+    signal bindingRequested(string key, string sequence)
+    property var actions: [
         {key: "launcher", label: "App launcher", sequence: ""},
         {key: "windows", label: "Tile manager", sequence: ""},
         {key: "workspaceOverview", label: "Workspace overview", sequence: ""},
@@ -37,6 +41,7 @@ Item {
         property string bindingsJson: "{}"
     }
     Component.onCompleted: {
+        if (nativeBackend) return;
         try {
             const saved = JSON.parse(storage.bindingsJson);
             if (saved && typeof saved === "object" && !Array.isArray(saved)) {
@@ -59,8 +64,8 @@ Item {
     }
     function validSequence(sequence) {
         return typeof sequence === "string" && (sequence === "" ||
-            (/^(Ctrl\+)?(Alt\+)?(Shift\+)?(Meta\+)?([A-Z0-9]|F(?:[1-9]|1[0-2]))$/.test(sequence) &&
-             (/Ctrl\+|Alt\+|Meta\+/.test(sequence) || /^F\d+$/.test(sequence))));
+            (/^(Ctrl\+)?(Alt\+)?(Shift\+)?(Meta\+)?([A-Z0-9]|F(?:[1-9]|1[0-2])|Space|Tab|Print)$/.test(sequence) &&
+             (/Ctrl\+|Alt\+|Meta\+/.test(sequence) || /^(F\d+|Print)$/.test(sequence))));
     }
     function binding(key) {
         if (Object.prototype.hasOwnProperty.call(overrides, key)) return overrides[key];
@@ -68,12 +73,17 @@ Item {
         return action ? action.sequence : "";
     }
     function saveBinding(key, sequence) {
+        if (busy || !ready) return false;
         if (!actions.some(action => action.key === key) || !validSequence(sequence)) {
             error = "Use Ctrl, Alt or Meta with a letter/number, or F1-F12.";
             return false;
         }
         const conflict = actions.find(action => action.key !== key && sequence !== "" && binding(action.key) === sequence);
         if (conflict) { error = "Already assigned to " + conflict.label + "."; return false; }
+        if (nativeBackend) {
+            bindingRequested(key, sequence);
+            return true;
+        }
         overrides = Object.assign({}, overrides, {[key]: sequence});
         storage.bindingsJson = JSON.stringify(overrides);
         storage.sync();
@@ -89,6 +99,9 @@ Item {
         if (event.key >= Qt.Key_A && event.key <= Qt.Key_Z || event.key >= Qt.Key_0 && event.key <= Qt.Key_9)
             key = String.fromCharCode(event.key);
         else if (event.key >= Qt.Key_F1 && event.key <= Qt.Key_F12) key = "F" + (event.key - Qt.Key_F1 + 1);
+        else if (event.key === Qt.Key_Space) key = "Space";
+        else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) key = "Tab";
+        else if (event.key === Qt.Key_Print) key = "Print";
         let sequence = "";
         if (event.modifiers & Qt.ControlModifier) sequence += "Ctrl+";
         if (event.modifiers & Qt.AltModifier) sequence += "Alt+";
@@ -102,7 +115,7 @@ Item {
             required property var modelData
             Shortcut {
                 sequence: shortcuts.binding(modelData.key)
-                enabled: shortcuts.recording === "" && sequence.toString() !== ""
+                enabled: !shortcuts.nativeBackend && shortcuts.recording === "" && sequence.toString() !== ""
                 context: Qt.ApplicationShortcut
                 onActivated: shortcuts.activated(modelData.key)
             }

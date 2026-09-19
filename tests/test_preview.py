@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QProcess, Qt, QUrl
 from PySide6.QtGui import QAccessible, QColor, QGuiApplication, QImage, QKeyEvent
-from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 from tools.wallpaper_palette import attach_palette_backend
@@ -75,17 +75,6 @@ class PreviewTests(unittest.TestCase):
     def click(self, name, root=None):
         item = self.item(name, root)
         self.assertTrue(item.isVisible())
-        ancestor = item.parentItem()
-        while ancestor:
-            if ancestor.objectName() == "homeNavigation":
-                flickable = ancestor.property("contentItem")
-                content = flickable.property("contentItem")
-                position = item.mapToItem(content, QPointF(0, 0)).y()
-                maximum = max(0, flickable.property("contentHeight") - flickable.height())
-                flickable.setProperty("contentY", min(maximum, max(0, position - 8)))
-                QTest.qWait(30)
-                break
-            ancestor = ancestor.parentItem()
         point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
         QTest.mouseClick(self.item_window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
         QTest.qWait(30)
@@ -214,6 +203,54 @@ class PreviewTests(unittest.TestCase):
         self.click("bottomLauncher")
         self.assertEqual(self.item("desktop").property("openPanel"), "launcher")
 
+    def test_bottom_bar_close_windows(self):
+        self.fixtures.setProperty("reducedMotion", True)
+        manager = self.window.findChild(QObject, "windowManager")
+        self.engine.globalObject().setProperty("testManager", self.engine.newQObject(manager))
+        self.engine.evaluate('testManager.open("browser")')
+        QTest.qWait(50)
+        self.click("bottomApp_browser")
+        self.click("bottomWindowClose1")
+        self.assertFalse(self.engine.evaluate('testManager.windows.some(window => window.windowId === 1)').toBool())
+        self.assertEqual(self.engine.evaluate('testManager.windows.filter(window => window.appId === "browser").length').toInt(), 1)
+        QTest.keyClick(self.window, Qt.Key.Key_Escape)
+        self.click("bottomClose_browser")
+        self.assertEqual(self.engine.evaluate('testManager.windows.filter(window => window.appId === "browser").length').toInt(), 0)
+        self.assertEqual(self.item("bottomEntries").property("count"), 2)
+
+    def test_bottom_bar_minimize_and_restore_controls(self):
+        self.fixtures.setProperty("reducedMotion", True)
+        manager = self.window.findChild(QObject, "windowManager")
+        self.engine.globalObject().setProperty("minimizeManager", self.engine.newQObject(manager))
+        self.engine.evaluate('minimizeManager.open("browser")')
+        QTest.qWait(30)
+        self.click("bottomApp_browser")
+        picker = self.item("bottomPickerSurface")
+        self.engine.globalObject().setProperty("minimizePicker", self.engine.newQObject(picker))
+        self.engine.evaluate('minimizePicker.manager = Object.assign({}, minimizePicker.manager, {controlsEnabled:true,busy:false,minimize:function() {}});')
+        QTest.qWait(30)
+        requested = []
+        restored = []
+        picker.minimizeRequested.connect(requested.append)
+        picker.focusRequested.connect(restored.append)
+        button = self.item("bottomWindowMinimize1")
+        self.assertTrue(button.isVisible())
+        self.click("bottomWindowMinimize1")
+        self.assertEqual(requested, [1])
+        self.engine.evaluate('minimizePicker.windows = [{windowId:1,title:"Hidden browser",workspace:-99,monitor:"Primary",minimized:true}];')
+        QTest.qWait(30)
+        self.assertIn("Minimized", self.item("bottomWindow1").property("text"))
+        self.assertEqual(self.item("bottomWindowMinimize1").property("description"), "Restore Hidden browser")
+        self.engine.evaluate('minimizePicker.manager = Object.assign({}, minimizePicker.manager, {busy:true});')
+        QTest.qWait(30)
+        self.assertFalse(self.item("bottomWindowMinimize1").isEnabled())
+        self.engine.evaluate('minimizePicker.manager = Object.assign({}, minimizePicker.manager, {busy:false});')
+        QTest.qWait(30)
+        self.capture("dock-minimized-window")
+        self.click("bottomWindowMinimize1")
+        self.assertEqual(restored, [1])
+        self.assertEqual(requested, [1])
+
     def test_bottom_bar_width_and_overflow(self):
         self.fixtures.setProperty("reducedMotion", True)
         manager = self.window.findChild(QObject, "windowManager")
@@ -225,7 +262,7 @@ class PreviewTests(unittest.TestCase):
             bar = self.item("bottomBar")
             self.assertAlmostEqual(bar.width(), min(bar.implicitWidth(), width - 24))
             self.assertAlmostEqual(bar.x() + bar.width() / 2, width / 2, delta=0.5)
-            self.assertEqual(bar.property("entryWidth"), 36 if bar.property("compact") else 152)
+            self.assertEqual(bar.property("entryWidth"), 64 if bar.property("compact") else 152)
             entries = self.item("bottomEntries")
             self.engine.evaluate('testManager.focus(2)')
             entries.positionViewAtEnd()
@@ -356,6 +393,42 @@ class PreviewTests(unittest.TestCase):
                         self.assertTrue(control.hasActiveFocus())
                         self.assertEqual(control.property("hovered"), hovered)
                         self.assert_outline_visible(control)
+
+    def test_secure_lock_view_has_no_preview_unlock_paths(self):
+        self.fixtures.setProperty("reducedMotion", True)
+        self.click("previewLockButton")
+        lock = self.item("lockPreview")
+        self.engine.globalObject().setProperty("secureLockView", self.engine.newQObject(lock))
+        result = self.engine.evaluate('''
+            var lockAuth = Qt.createQmlObject('import QtQuick; QtObject { property bool busy: false; property string status: ""; property int requests: 0; function submit(response) { requests++; busy = true; } }', secureLockView);
+            secureLockView.service = Object.assign({}, secureLockView.service, {userName:"Test user",keyboardLayout:"French",production:true,
+                lockSeries:[{name:"CPU",value:12,detail:"Utilization"}],lockHistory:[Array(48).fill(12)]});
+            secureLockView.authenticator = lockAuth;
+        ''')
+        self.assertFalse(result.isError(), result.toString())
+        QTest.qWait(30)
+        dismissed = []
+        lock.dismissed.connect(lambda: dismissed.append(True))
+        self.assertFalse(self.item("exitLockPreview").isVisible())
+        field = self.item("lockPassword")
+        field.setProperty("text", "test-only-placeholder")
+        field.forceActiveFocus()
+        QTest.keyClick(self.window, Qt.Key.Key_Escape)
+        self.assertEqual(field.property("text"), "")
+        self.assertTrue(lock.isVisible())
+        field.setProperty("text", "test-only-placeholder")
+        self.click("lockSubmit")
+        self.assertEqual(field.property("text"), "")
+        self.assertTrue(lock.property("busy"))
+        self.assertEqual(self.engine.evaluate("lockAuth.requests").toInt(), 1)
+        QTest.qWait(1150)
+        self.assertEqual(dismissed, [])
+        self.assertTrue(lock.isVisible())
+        self.engine.evaluate('lockAuth.status = "Authentication failed. Try again."; lockAuth.busy = false;')
+        QTest.qWait(30)
+        self.assertTrue(field.isEnabled())
+        self.assertIn("Authentication failed", self.item("lockStatus").property("text"))
+        self.assertEqual(self.item("lockWidgets").property("sample"), 48)
 
     def test_lock_preview_states_and_layout(self):
         self.fixtures.setProperty("reducedMotion", True)
@@ -684,7 +757,7 @@ class PreviewTests(unittest.TestCase):
             self.assertEqual(outgoing.property("displayedKey"), "music")
             self.assertTrue(notch.property("displayedKey").startswith("notification:"))
             self.assertLess(notch.property("pageOffset"), 0)
-            self.assertGreater(outgoing.x(), -14)
+            self.assertGreaterEqual(outgoing.x(), -14)
             self.assertEqual(notch.property("progress"), 1)
             self.assertFalse(content.isEnabled())
             self.assertTrue(content.parentItem().clip())
@@ -692,7 +765,11 @@ class PreviewTests(unittest.TestCase):
             self.assertEqual(outgoing.opacity(), 1)
             previous_offset = notch.property("pageOffset")
             QTest.qWait(40)
-            self.assertGreater(notch.property("pageOffset"), previous_offset)
+            if style == "Stepped":
+                self.assertGreaterEqual(notch.property("pageOffset"), previous_offset)
+                self.assertAlmostEqual(notch.property("pageRevealProgress") * 6, round(notch.property("pageRevealProgress") * 6))
+            else:
+                self.assertGreater(notch.property("pageOffset"), previous_offset)
             self.capture("notch-slide-out-" + style.lower())
             QTest.qWait(160)
             self.assertLess(notch.property("pageOffset"), 0)
@@ -710,7 +787,7 @@ class PreviewTests(unittest.TestCase):
             self.assertEqual(notch.property("slideDirection"), 1)
             self.assertEqual(self.item("notchNotificationTitle").property("text"), "Newer " + style)
             self.assertEqual(self.item("outgoing-notchNotificationTitle").property("text"), "Slide " + style)
-            self.assertGreater(outgoing.x(), -14)
+            self.assertGreaterEqual(outgoing.x(), -14)
             self.assertLess(notch.property("pageOffset"), 0)
             QTest.qWait(200)
             self.capture("notch-notification-stack-" + style.lower())
@@ -721,7 +798,7 @@ class PreviewTests(unittest.TestCase):
             self.click("dismissNotchNotification")
             QTest.qWait(70)
             self.assertEqual(notch.property("slideDirection"), -1)
-            self.assertLess(outgoing.x(), -14)
+            self.assertLessEqual(outgoing.x(), -14)
             self.assertGreater(notch.property("pageOffset"), 0)
             QTest.qWait(210)
             self.assertGreater(notch.property("pageOffset"), 0)
@@ -1283,6 +1360,9 @@ class PreviewTests(unittest.TestCase):
         ''')
         self.home_action("homeSystemSummary")
         page = self.item("homeSystemPage")
+        self.assertIsNone(self.window.findChild(QObject, "systemDetailsToggle"))
+        self.assertTrue(self.item("systemDetails").isVisible())
+        self.assertEqual(self.item("storageUsagenvme0n1p1").property("value"), 75)
         self.engine.globalObject().setProperty("systemPage", self.engine.newQObject(page))
         evaluate('''
             var systemHistory = {};
@@ -1362,9 +1442,12 @@ class PreviewTests(unittest.TestCase):
                     self.assertEqual(len(set(colors)), min(4, len(colors)))
                     if palette == "Chalk":
                         previous_colors[group["key"]] = colors
-                        self.assertTrue(all(max(QColor(color).getRgb()[:3]) - min(QColor(color).getRgb()[:3]) < 8 for color in colors))
+                        self.assertTrue(all(max(QColor(color).getRgb()[:3]) - min(QColor(color).getRgb()[:3]) > 40 for color in colors))
                     else:
-                        self.assertNotEqual(colors, previous_colors[group["key"]])
+                        self.assertEqual(colors, previous_colors[group["key"]])
+                    frame = self.item("resourceFrame" + group["key"], page)
+                    self.assertGreater(evaluate("systemGraph.parent.border.width").toNumber(), 0)
+                    self.assertLessEqual(frame.property("radius"), 8)
                     for index, color in enumerate(colors):
                         self.assertGreater(color_pixels(image, QColor(color), index), 12, (palette, width, group["key"], index, color))
                         self.assertEqual(color_pixels(image, QColor(color), index, round(image.width() * 28 / 59), round(image.width() * 31 / 59)), 0)
@@ -1413,16 +1496,7 @@ class PreviewTests(unittest.TestCase):
                             self.assertGreaterEqual(icon.x(), legend.property("contentX") - 1)
                             self.assertLessEqual(icon.x() + icon.width(), legend.property("contentX") + legend.width() + 1)
                             tooltip = icon.findChild(QObject, icon.objectName() + "Details")
-                            self.assertIsNotNone(tooltip)
-                            self.assertTrue(tooltip.property("visible"))
-                            self.assertEqual(tooltip.property("text"), icon.property("description"))
-                            tooltip_item = tooltip.property("contentItem")
-                            self.assertLessEqual(tooltip_item.property("contentWidth"), tooltip_item.width() + 1)
-                            self.assertLessEqual(tooltip_item.property("contentHeight"), tooltip_item.height() + 1)
-                            self.assertGreater(tooltip_item.property("color").lightness(), 180)
-                            popup_item = tooltip_item.parentItem()
-                            self.assertGreaterEqual(popup_item.mapToScene(QPointF(0, 0)).x(), graph.mapToScene(QPointF(0, 0)).x() - 1)
-                            self.assertLessEqual(popup_item.mapToScene(QPointF(popup_item.width(), 0)).x(), graph.mapToScene(QPointF(graph.width(), 0)).x() + 1)
+                            self.assertIsNone(tooltip)
                         QTest.keyClick(self.window, Qt.Key.Key_Space)
                         self.assertEqual(len(graph.property("series")), len(group["series"]))
                         self.assertFalse(icons[-1].property("checked"))
@@ -1441,11 +1515,11 @@ class PreviewTests(unittest.TestCase):
                         QTest.mouseMove(self.window, icons[0].mapToScene(QPointF(16, 16)).toPoint())
                         QTest.qWait(500)
                         self.assertTrue(icons[0].property("hovered"))
-                        self.assertTrue(icons[0].findChild(QObject, icons[0].objectName() + "Details").property("visible"))
+                        self.assertIsNone(icons[0].findChild(QObject, icons[0].objectName() + "Details"))
                         QTest.mouseMove(self.window, QPointF(0, 0).toPoint())
                         QTest.qWait(150)
                         self.assertTrue(all(not icon.hasActiveFocus() for icon in icons))
-                        self.assertTrue(all(not icon.findChild(QObject, icon.objectName() + "Details").property("visible") for icon in icons))
+                        self.assertTrue(all(icon.findChild(QObject, icon.objectName() + "Details") is None for icon in icons))
                         reveal(graph)
                         self.capture(f"system-compact-{palette}-{group['key']}-{width}")
                     if group["key"] == "gpu:gpu1":
@@ -1535,9 +1609,10 @@ class PreviewTests(unittest.TestCase):
             var networkDevices = networkData.devices;
             networkDevices.wifi = true;
             networkDevices.network = [
-                {name:"enp1s0",type:"ethernet",state:"connected",connection:"Studio wired connection"},
+                {name:"enp1s0",type:"ethernet",state:"connected",connection:"Studio wired connection",ipv4:["192.0.2.10/24"],ipv6:["2001:db8:1234:5678:90ab:cdef:1234:5678/64"],gateway:"192.0.2.1"},
                 {name:"wlan0",type:"wifi",state:"connected",connection:"StudioNetworkWithAnUnbrokenLongSSID0123456789"},
-                {name:"enp2s0",type:"ethernet",state:"disconnected",connection:"--"}
+                {name:"enp2s0",type:"ethernet",state:"disconnected",connection:"--"},
+                {name:"tun0",type:"tun",state:"connected",connection:"Work VPN"}
             ];
             networkDevices.accessPoints = [
                 {ssid:"StudioNetworkWithAnUnbrokenLongSSID0123456789",signal:87,security:"WPA2",active:true},
@@ -1548,8 +1623,24 @@ class PreviewTests(unittest.TestCase):
             networkData.devices = networkDevices;
             var networkCommands = [];
             networkData.commandRequested.connect(command => networkCommands.push(command));
+            var publicLookups = 0;
+            networkData.publicAddressRequested.connect(() => publicLookups++);
         ''')
         self.home_action("homeNetworkTab")
+        for group in ("Ethernet", "Wi-Fi", "Virtual / VPN"):
+            self.assertTrue(self.item("homeNetworkGroup" + group).isVisible())
+        self.assertEqual(self.item("homeNetworkAddressenp1s0ipv4").property("text"), "192.0.2.10/24")
+        self.assertEqual(self.item("homeNetworkAddressenp1s0gateway").property("text"), "192.0.2.1")
+        self.assertEqual(self.item("homeNetworkPublicAddress").property("text"), "Not checked")
+        self.assertEqual(evaluate("publicLookups").toInt(), 0)
+        activate("homeNetworkPublicLookup")
+        self.assertEqual(evaluate("publicLookups").toInt(), 1)
+        evaluate('networkData.publicAddressBusy = true; networkData.publicAddressStatus = "Checking";')
+        self.assertFalse(self.item("homeNetworkPublicLookup").isEnabled())
+        activate("homeNetworkPublicLookup")
+        self.assertEqual(evaluate("publicLookups").toInt(), 1)
+        evaluate('networkData.publicAddressBusy = false; networkData.publicAddress = "198.51.100.7"; networkData.publicAddressStatus = "Checked";')
+        self.assertEqual(self.item("homeNetworkPublicAddress").property("text"), "198.51.100.7")
         controls = ("homeNetworkWifi", "homeNetworkRefresh", "homeNetworkEditor", "homeNetworkDisconnectenp1s0", "homeNetworkDisconnectwlan0", "homeNetworkConnectenp2s0", "homeNetworkSavedConnect0", "homeNetworkSavedEdit0")
         for name in controls:
             self.assertFalse(self.item(name).isEnabled(), name)
@@ -1639,6 +1730,90 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(self.item("homeNetworkEmpty").property("text"), "Network data unavailable")
         check_widths("preview")
 
+    def test_monitor_drag_stable_and_applies_on_release(self):
+        self.fixtures.setProperty("reducedMotion", True)
+        self.studio.setProperty("customWidth", 768)
+        self.engine.globalObject().setProperty("dragFixture", self.engine.newQObject(self.fixtures))
+        result = self.engine.evaluate('''
+            var dragData = dragFixture.desktopData;
+            dragData.controlsEnabled = true;
+            dragData.devices = Object.assign({},dragData.devices,{monitors:[
+                {name:"DP-1",width:1920,height:1080,refreshRate:144,availableModes:["1920x1080@144Hz"],scale:1,transform:0,x:0,y:0},
+                {name:"DP-2",width:1920,height:1080,refreshRate:144,availableModes:["1920x1080@144Hz"],scale:1,transform:0,x:1920,y:0}
+            ]});
+            var dragRequests = [];
+            dragData.displayArrangementRequested.connect(positions => dragRequests.push(positions));
+        ''')
+        self.assertFalse(result.isError(), result.toString())
+        self.home_action("homeDisplayTab")
+        QTest.qWait(50)
+        tile = self.item("monitorTileDP-2")
+        page = self.item("homeDevicePage")
+        flickable = page.property("contentItem")
+        initial_scroll = flickable.property("contentY")
+        initial_position = tile.position()
+        start = tile.mapToScene(QPointF(tile.width() / 2, tile.height() / 2)).toPoint()
+        end = start + QPointF(20, 30).toPoint()
+        board = self.item("monitorArrangementBoard")
+        delta = board.mapFromScene(QPointF(end)) - board.mapFromScene(QPointF(start))
+        QTest.mousePress(self.window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+        QTest.mouseMove(self.window, end, 20)
+        QTest.qWait(80)
+        self.assertAlmostEqual(tile.x(), initial_position.x() + delta.x(), delta=1)
+        self.assertAlmostEqual(tile.y(), initial_position.y() + delta.y(), delta=1)
+        self.assertEqual(flickable.property("contentY"), initial_scroll)
+        self.assertEqual(self.engine.evaluate("dragRequests.length").toInt(), 0)
+        QTest.mouseMove(self.window, end, 20)
+        QTest.qWait(80)
+        self.assertAlmostEqual(tile.x(), initial_position.x() + delta.x(), delta=1)
+        self.assertAlmostEqual(tile.y(), initial_position.y() + delta.y(), delta=1)
+        QTest.mouseRelease(self.window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, end)
+        QTest.qWait(30)
+        requests = self.engine.evaluate("dragRequests").toVariant()
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0][0]["name"], "DP-2")
+        self.assertGreater(requests[0][0]["y"], 0)
+        tile = self.item("monitorTileDP-1")
+        point = tile.mapToScene(QPointF(tile.width() / 2, tile.height() / 2)).toPoint()
+        QTest.mouseClick(self.window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+        self.assertEqual(self.engine.evaluate("dragRequests.length").toInt(), 1)
+        self.engine.evaluate("dragData.displayPending = true;")
+        QTest.qWait(30)
+        self.assertFalse(self.item("monitorArrangementDragArea").property("enabled"))
+
+    def test_monitor_edge_snapping_has_no_gaps(self):
+        self.fixtures.setProperty("reducedMotion", True)
+        self.engine.globalObject().setProperty("snapFixture", self.engine.newQObject(self.fixtures))
+        result = self.engine.evaluate('''
+            var snapData = snapFixture.desktopData;
+            snapData.controlsEnabled = true;
+            snapData.devices = Object.assign({},snapData.devices,{monitors:[
+                {name:"DP-1",width:5120,height:1440,scale:1,transform:0,x:0,y:0},
+                {name:"DP-2",width:1920,height:1080,scale:1,transform:0,x:1600,y:1440}
+            ]});
+            var snapRequests = [];
+            snapData.displayArrangementRequested.connect(positions => snapRequests.push(positions));
+        ''')
+        self.assertFalse(result.isError(), result.toString())
+        self.home_action("homeDisplayTab")
+        self.engine.globalObject().setProperty("snapMap", self.engine.newQObject(self.item("homeMonitorArrangement")))
+        for horizontal, vertical, expected_x, expected_y in (
+            (1200, 1900, 1200, 1440),
+            (1200, -1500, 1200, -1080),
+            (5600, 350, 5120, 360),
+            (-2400, 350, -1920, 360),
+        ):
+            with self.subTest(horizontal=horizontal, vertical=vertical):
+                result = self.engine.evaluate(f'snapMap.reload(); snapMap.moveOutput("DP-2",{horizontal},{vertical},true); snapRequests.pop();')
+                self.assertFalse(result.isError(), result.toString())
+                self.assertEqual(result.toVariant(), [{"name":"DP-2","x":expected_x,"y":expected_y}])
+        result = self.engine.evaluate('''
+            snapData.devices = Object.assign({},snapData.devices,{monitors:snapData.devices.monitors.map(output =>
+                output.name === "DP-1" ? Object.assign({},output,{scale:2,transform:1}) : output)});
+            snapMap.reload(); snapMap.moveOutput("DP-2",0,3000,true); snapRequests.pop();
+        ''')
+        self.assertEqual(result.toVariant(), [{"name":"DP-2","x":0,"y":2560}])
+
     def test_display_polish_states_bounds_and_keyboard(self):
         self.fixtures.setProperty("reducedMotion", True)
         self.engine.globalObject().setProperty("displayFixture", self.engine.newQObject(self.fixtures))
@@ -1700,7 +1875,8 @@ class PreviewTests(unittest.TestCase):
         ''')
         self.home_action("homeDisplayTab")
         self.assertEqual(self.item("homeDisplayTab").property("iconName"), "monitor")
-        self.assertEqual(self.item("homeDisplayModeDP-1").property("currentIndex"), 1)
+        self.assertEqual(self.item("homeDisplayModeDP-1").property("currentIndex"), 0)
+        self.assertEqual(self.item("homeDisplayMaximumDP-1").property("text"), "Up to 144 Hz")
         self.assertEqual(self.item("homeDisplaySummaryDP-1").property("text"), "1920 x 1080 / 144.00 Hz")
         controls = ("homeDisplayModeDP-1", "homeDisplayScaleDP-1", "homeDisplayRotationDP-1", "homeDisplayApplyDP-1")
         for name in controls:
@@ -1714,15 +1890,15 @@ class PreviewTests(unittest.TestCase):
         mode = self.item("homeDisplayModeDP-1")
         mode.forceActiveFocus()
         QTest.keyClick(self.window, Qt.Key.Key_Space)
-        QTest.keyClick(self.window, Qt.Key.Key_Up)
+        QTest.keyClick(self.window, Qt.Key.Key_Down)
         QTest.keyClick(self.window, Qt.Key.Key_Return)
-        self.assertEqual(mode.property("currentIndex"), 0)
+        self.assertEqual(mode.property("currentIndex"), 1)
         self.assertTrue(self.item("homeDisplayApplyDP-1").isEnabled())
         self.assertEqual(self.item("homeDisplayStateDP-1").property("text"), "Changes not applied")
         self.item("homeDisplayApplyDP-1").forceActiveFocus()
         QTest.keyClick(self.window, Qt.Key.Key_Space)
         self.assertEqual(evaluate("displayRequests.pop()").toVariant(), ["DP-1", "1920x1080@60.00Hz", 1, 0])
-        mode.setProperty("currentIndex", 1)
+        mode.setProperty("currentIndex", 0)
         self.assertFalse(self.item("homeDisplayApplyDP-1").isEnabled())
         self.item("homeDisplayScaleDP-1Number").forceActiveFocus()
         QTest.keyClick(self.window, Qt.Key.Key_Up)
@@ -2242,7 +2418,7 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(self.item("home_volumeSlider").property("value"), 65)
         self.assertEqual(self.item("volumeButton").property("text"), "65%")
         self.home_action("homeTab")
-        self.assertEqual(self.item("controlVolume").property("value"), 65)
+        self.assertIsNone(self.window.findChild(QObject, "controlVolume"))
         self.home_action("homeAudio")
         for width in (320, 375, 414, 768):
             self.studio.setProperty("customWidth", width)
@@ -2269,6 +2445,437 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(self.fixtures.property("volume"), 64)
         self.assertTrue(self.fixtures.property("microphoneEnabled"))
         self.assertEqual(self.engine.evaluate("fixtureAudioCommands.length").toInt(), 0)
+
+    def test_native_monitor_arrangement_commands(self):
+        result = self.engine.evaluate((ROOT / "shell/Services/DisplaySettings.js").read_text())
+        self.assertFalse(result.isError(), result.toString())
+        result = self.engine.evaluate('''
+            var arrangementMonitors = [{name:"DP-1",width:1920,height:1080,refreshRate:144,scale:1,transform:0,x:0,y:0}];
+            arrangementCommand(arrangementMonitors,[{name:"DP-1",x:-1920,y:100}],true);
+        ''')
+        self.assertEqual(result.toVariant(), ["hyprctl", "repl", 'hl.monitor({output="DP-1",mode="1920x1080@144",position="-1920x100",scale=1,transform=0})'])
+        self.assertEqual(self.engine.evaluate('arrangementCommand(arrangementMonitors,[{name:"DP-1",x:0,y:0}],false)').toVariant(),
+                         ["hyprctl", "--batch", "keyword monitor DP-1,1920x1080@144,0x0,1,transform,0"])
+        for positions in ('[]', '[{name:"unknown",x:0,y:0}]', '[{name:"DP-1",x:0.5,y:0}]',
+                          '[{name:"DP-1",x:32769,y:0}]', '[{name:"DP-1",x:0,y:0},{name:"DP-1",x:1,y:0}]'):
+            self.assertEqual(self.engine.evaluate(f'arrangementCommand(arrangementMonitors,{positions},true)').toVariant(), [])
+
+    def test_native_display_setting_commands(self):
+        import json
+
+        result = self.engine.evaluate((ROOT / "shell/Services/DisplaySettings.js").read_text())
+        self.assertFalse(result.isError(), result.toString())
+        for width, height, modes, expected in (
+            (5120, 1440, ["3840x1080@119.97Hz", "5120x1440@59.98Hz", "5120x1440@239.76Hz", "5120x1440@120.00Hz"], "5120x1440@239.76Hz"),
+            (1920, 1080, ["1920x1080@60.00Hz", "1920x1080@143.99Hz", "1920x1080@119.98Hz"], "1920x1080@143.99Hz"),
+        ):
+            result = self.engine.evaluate(f'sortedModes({{width:{width},height:{height},availableModes:{json.dumps(modes)}}})').toVariant()
+            self.assertEqual(result[0], expected)
+            self.assertCountEqual(result, modes)
+        result = self.engine.evaluate('var displayMonitor = {name:"DP-2",x:-1920,y:0}; command(displayMonitor,"1920x1080@144.00Hz",1.25,1,true)')
+        self.assertEqual(result.toVariant(), ["hyprctl", "repl", 'hl.monitor({output="DP-2",mode="1920x1080@144.00",position="-1920x0",scale=1.25,transform=1})'])
+        self.assertEqual(self.engine.evaluate('command(displayMonitor,"1920x1080@144",1,0,false)').toVariant(),
+                         ["hyprctl", "keyword", "monitor", "DP-2,1920x1080@144,-1920x0,1,transform,0"])
+        for expression in ('command(displayMonitor,"bad mode",1,0,true)',
+                           'command(displayMonitor,"1920x1080@144",NaN,0,true)',
+                           'command(displayMonitor,"1920x1080@144",4,0,true)',
+                           'command(displayMonitor,"1920x1080@144",1,1.5,true)',
+                           'command({name:"bad\\\" lua",x:0,y:0},"1920x1080@144",1,0,true)'):
+            self.assertEqual(self.engine.evaluate(expression).toVariant(), [])
+
+    def test_overview_keyboard_window_actions(self):
+        result = self.engine.evaluate((ROOT / "third_party/quickshell-overview/modules/overview/OverviewKeyboard.js").read_text())
+        self.assertFalse(result.isError(), result.toString())
+        self.assertEqual(self.engine.evaluate('selection([{address:"0xa"},{address:"0xb"}],"0xb","0xa")').toString(), "0xb")
+        self.assertEqual(self.engine.evaluate('selection([{address:"0xa"},{address:"0xb"}],"0xc","0xb")').toString(), "0xb")
+        self.assertEqual(self.engine.evaluate('selection([{address:"0xa"}],"0xb","0xc")').toString(), "0xa")
+        self.assertEqual(self.engine.evaluate('selection([],"0xb","0xc")').toString(), "")
+        self.assertEqual(self.engine.evaluate('selection([{},null],"",undefined)').toString(), "")
+        self.assertEqual(self.engine.evaluate('selection([{}, {address:"0xa"}],"",undefined)').toString(), "0xa")
+        self.assertEqual(self.engine.evaluate('cycle([{},null,{address:"0xa"}],"",false)').toString(), "0xa")
+        self.assertEqual(self.engine.evaluate('cycle([{address:"0xa"},{address:"0xb"}],"0xa",false)').toString(), "0xb")
+        self.assertEqual(self.engine.evaluate('cycle([{address:"0xa"},{address:"0xb"}],"0xa",true)').toString(), "0xb")
+        self.assertEqual(self.engine.evaluate('cycle([],"",false)').toString(), "")
+        self.assertEqual(self.engine.evaluate('command("move",{address:"0xabc"},3,true)').toVariant(),
+                         ["hyprctl", "repl", 'hl.dispatch(hl.dsp.window.move({workspace="3",follow=true,window="address:0xabc"}));hl.dispatch(hl.dsp.focus({window="address:0xabc"}))'])
+        self.assertEqual(self.engine.evaluate('command("move",{address:"0xabc"},"special:scratch",false)').toVariant(),
+                         ["hyprctl", "--batch", "dispatch movetoworkspace special:scratch,address:0xabc;dispatch focuswindow address:0xabc"])
+        self.assertEqual(self.engine.evaluate('command("swap",{address:"0xabc"},"left",true)').toVariant(),
+                         ["hyprctl", "repl", 'hl.dispatch(hl.dsp.window.swap({direction="left",window="address:0xabc"}))'])
+        for expression in ('command("swap",{address:"0xabc",floating:true},"left",true)',
+                           'command("move",{address:"bad"},2,true)', 'command("move",{address:"0xabc"},-1,true)',
+                           'command("swap",{address:"0xabc"},"bad lua",true)'):
+            self.assertEqual(self.engine.evaluate(expression).toVariant(), [])
+
+    def test_overview_keyboard_monitor_ownership(self):
+        import json
+
+        source = (ROOT / "third_party/quickshell-overview/modules/overview/Overview.qml").read_text()
+        handler = source.split("Keys.onPressed: event => {", 1)[1].split("\n            ColumnLayout {", 1)[0]
+        handler = handler.rsplit("\n                }", 1)[0]
+        navigation = source.split("function navigateWorkspace(target) {", 1)[1].split("\n            }", 1)[0]
+        activation = source.split("function activateWorkspace(target) {", 1)[1].split("\n            }", 1)[0]
+        movement = source.split("function moveWindow(window, destination) {", 1)[1].split("\n            }", 1)[0]
+        constants = {name: int(getattr(Qt.Key, name)) for name in (
+            "Key_Tab", "Key_Backtab", "Key_Left", "Key_Right", "Key_Up", "Key_Down",
+            "Key_H", "Key_J", "Key_K", "Key_L", "Key_Return", "Key_Enter", "Key_Escape",
+            "Key_0", "Key_1", "Key_9")}
+        constants.update(ShiftModifier=Qt.ShiftModifier.value, ControlModifier=Qt.ControlModifier.value)
+        result = self.engine.evaluate('''
+            var Qt = %s;
+            var dispatched = [];
+            var root = {monitorIsFocused:false,monitor:{id:1,activeWorkspace:{id:12}},keyboardWorkspaceId:12,
+                syncKeyboardSelection:function() {}};
+            var Hyprland = {usingLua:true,focusedMonitor:{id:0,activeWorkspace:{id:1}},
+                dispatch:function(command) {dispatched.push(command);}};
+            var Config = {options:{overview:{rows:2,columns:3,useWorkspaceMap:true,
+                workspaceMap:[0,10],orderRightLeft:false,orderBottomUp:false}}};
+            var GlobalStates = {overviewSelectedAddress:"0xa"};
+            var handleOverviewKey = function(event) {%s};
+            root.navigateWorkspace = function(target) {%s};
+            root.activateWorkspace = function(target) {%s};
+            root.moveWindow = function(window, destination) {%s};
+        ''' % (json.dumps(constants), handler, navigation, activation, movement))
+        self.assertFalse(result.isError(), result.toString())
+        self.engine.evaluate('handleOverviewKey({key:Qt.Key_Right,modifiers:0})')
+        self.assertEqual(self.engine.evaluate('dispatched').toVariant(), [])
+        self.engine.evaluate('root.monitorIsFocused=true; handleOverviewKey({key:Qt.Key_Right,modifiers:0})')
+        self.assertEqual(self.engine.evaluate('dispatched').toVariant(), [])
+        self.assertEqual(self.engine.evaluate('GlobalStates.overviewSelectedAddress').toString(), "")
+        self.assertEqual(self.engine.evaluate('root.keyboardWorkspaceId').toInt(), 13)
+        self.engine.evaluate('handleOverviewKey({key:Qt.Key_Right,modifiers:0})')
+        self.assertEqual(self.engine.evaluate('root.keyboardWorkspaceId').toInt(), 11)
+        self.assertEqual(self.engine.evaluate('dispatched').toVariant(), [])
+        self.engine.evaluate('root.keyboardChanging=true')
+        for key, modifiers in (("Key_Return", 0), ("Key_Tab", 0), ("Key_Right", Qt.ShiftModifier.value),
+                               ("Key_Left", Qt.ControlModifier.value)):
+            result = self.engine.evaluate(f'var event = {{key:Qt.{key},modifiers:{modifiers},accepted:false}}; handleOverviewKey(event); event.accepted')
+            self.assertFalse(result.isError(), result.toString())
+            self.assertTrue(result.toBool())
+        self.assertEqual(self.engine.evaluate('dispatched').toVariant(), [])
+        self.engine.evaluate('root.keyboardChanging=false; handleOverviewKey({key:Qt.Key_Return,modifiers:0})')
+        self.assertEqual(self.engine.evaluate('dispatched').toVariant(), ["hl.dsp.focus({workspace = '11'})"])
+        self.engine.evaluate((ROOT / "third_party/quickshell-overview/modules/overview/OverviewKeyboard.js").read_text())
+        result = self.engine.evaluate('''
+            var Keyboard = {command:command};
+            var moves = [];
+            root.selectedWindow = {address:"0xabc",workspace:{id:11}};
+            root.runWindowCommand = function(command, destination) {moves.push({command:command,destination:destination});};
+            handleOverviewKey({key:Qt.Key_Right,modifiers:Qt.ShiftModifier});
+            moves;
+        ''')
+        self.assertFalse(result.isError(), result.toString())
+        self.assertEqual(result.toVariant(), [{"command":["hyprctl", "repl", 'hl.dispatch(hl.dsp.window.move({workspace="12",follow=true,window="address:0xabc"}));hl.dispatch(hl.dsp.focus({window="address:0xabc"}))'], "destination":12}])
+        self.assertEqual(self.engine.evaluate('dispatched').toVariant(), ["hl.dsp.focus({workspace = '11'})"])
+        result = self.engine.evaluate('''
+            root.selectedWindow = {address:"0xabc",class:"kitty",workspace:{id:14}};
+            handleOverviewKey({key:Qt.Key_Right,modifiers:Qt.ShiftModifier});
+            moves[moves.length-1];
+        ''')
+        self.assertFalse(result.isError(), result.toString())
+        self.assertEqual(result.toVariant()["destination"], 15)
+        self.assertIn('window="address:0xabc"', result.toVariant()["command"][2])
+        result = self.engine.evaluate('handleOverviewKey({key:Qt.Key_Left,modifiers:Qt.ControlModifier}); moves[moves.length-1].command')
+        self.assertFalse(result.isError(), result.toString())
+        self.assertIn('window="address:0xabc"', result.toVariant()[2])
+        result = self.engine.evaluate('handleOverviewKey({key:Qt.Key_Return,modifiers:0}); dispatched[dispatched.length-1]')
+        self.assertFalse(result.isError(), result.toString())
+        self.assertEqual(result.toString(), "hl.dsp.focus({window = 'address:0xabc'})")
+        self.assertIn('keyboardWindows: HyprlandData.windowList.filter', source)
+        self.assertIn('selectedWindow: HyprlandData.windowByAddress[', source)
+        self.engine.evaluate('GlobalStates.overviewOpen=true; handleOverviewKey({key:Qt.Key_Escape,modifiers:0})')
+        self.assertFalse(self.engine.evaluate('GlobalStates.overviewOpen').toBool())
+
+    def test_overview_move_keeps_manager_and_selection(self):
+        source = (ROOT / "third_party/quickshell-overview/modules/overview/Overview.qml").read_text()
+        completed = source.split("onExited: (exitCode, exitStatus) => {", 1)[1].split("\n            Timer {", 1)[0]
+        completed = completed.rsplit("\n                }", 1)[0]
+        sync = source.split("function syncKeyboardSelection() {", 1)[1].split("\n            }", 1)[0]
+        result = self.engine.evaluate('''
+            var root = {keyboardWorkspaceId:1,monitorIsFocused:true,keyboardChanging:true,selectedWindow:{address:"0xabc"}};
+            var GlobalStates = {overviewOpen:true,overviewSelectedAddress:"0xold"};
+            var destination = 4;
+            var selectedAddress = "0xabc";
+            var keyboardOutput = {text:""};
+            var keyboardErrors = {text:""};
+            var regrabbed = false;
+            var keyboardRegrab = {restart:function() {regrabbed=true;}};
+            var finishMove = function(exitCode, exitStatus) {%s};
+            var syncSelection = function() {%s};
+            finishMove(0,0);
+            syncSelection();
+        ''' % (completed, sync))
+        self.assertFalse(result.isError(), result.toString())
+        self.assertTrue(self.engine.evaluate('GlobalStates.overviewOpen').toBool())
+        self.assertTrue(self.engine.evaluate('regrabbed').toBool())
+        self.assertEqual(self.engine.evaluate('root.keyboardWorkspaceId').toInt(), 4)
+        self.assertEqual(self.engine.evaluate('GlobalStates.overviewSelectedAddress').toString(), "0xabc")
+        result = self.engine.evaluate('root.keyboardChanging=false; syncSelection(); destination="special:scratch"; finishMove(0,0)')
+        self.assertFalse(result.isError(), result.toString())
+        self.assertTrue(self.engine.evaluate('GlobalStates.overviewOpen').toBool())
+        self.assertEqual(self.engine.evaluate('GlobalStates.overviewSelectedAddress').toString(), "0xabc")
+
+    def test_overview_drag_requires_real_movement(self):
+        import json
+
+        source = (ROOT / "third_party/quickshell-overview/modules/overview/OverviewWidget.qml").read_text()
+        area = source.split("id: dragArea", 1)[1].split("StyledToolTip {", 1)[0]
+        released = area.split("onReleased: {", 1)[1].split("\n                        onCanceled:", 1)[0]
+        released = released.rsplit("}", 1)[0]
+        clicked = area.split("onClicked: (event) => {", 1)[1].rsplit("}", 1)[0]
+        result = self.engine.evaluate('''
+            var dispatched = [];
+            var dragged = false;
+            var root = {draggingTargetWorkspace:2,draggingTargetSpecialWorkspace:"",draggingFromWorkspace:1};
+            var panelWindow = {moveWindow:function(window, destination) {dispatched.push({address:window.address,destination:destination});}};
+            var windowData = {address:"0xabc",workspace:{id:1}};
+            var window = {windowData:windowData,Drag:{active:true},dragInProgress:true,pressed:true,initX:10,initY:20};
+            var updateWindowPosition = {restart:function() {}};
+            var Hyprland = {usingLua:true,dispatch:function(command) {dispatched.push(command);}};
+            var GlobalStates = {overviewOpen:true};
+            var Qt = {LeftButton:%s};
+            var releaseDrag = function() {%s};
+            var clickWindow = function(event) {%s};
+        ''' % (json.dumps(Qt.LeftButton.value), released, clicked))
+        self.assertFalse(result.isError(), result.toString())
+        result = self.engine.evaluate('releaseDrag(); dispatched')
+        self.assertFalse(result.isError(), result.toString())
+        self.assertEqual(result.toVariant(), [])
+        self.assertFalse(self.engine.evaluate('window.dragInProgress').toBool())
+        result = self.engine.evaluate('dragged=true; root.draggingTargetWorkspace=2; releaseDrag(); clickWindow({button:Qt.LeftButton}); dispatched')
+        self.assertFalse(result.isError(), result.toString())
+        self.assertEqual(result.toVariant(), [{"address":"0xabc","destination":2}])
+        self.assertTrue(self.engine.evaluate('GlobalStates.overviewOpen').toBool())
+
+    def test_native_minimize_restore_commands(self):
+        result = self.engine.evaluate((ROOT / "host/Services/WindowActions.js").read_text())
+        self.assertFalse(result.isError(), result.toString())
+        self.assertEqual(self.engine.evaluate('command("minimize",{address:"0xabc123",workspace:3})').toString(),
+                         'hl.dispatch(hl.dsp.window.move({workspace="special:quickshell-minimized-3",follow=false,window="address:0xabc123"}))')
+        self.assertEqual(self.engine.evaluate('command("restore",{address:"0xabc123",workspaceName:"special:quickshell-minimized-3"})').toString(),
+                         'hl.dispatch(hl.dsp.window.move({workspace="3",follow=true,window="address:0xabc123"}))')
+        for expression in ('command("minimize",{address:"bad",workspace:1})',
+                           'command("minimize",{address:"0xabc",workspace:-99})',
+                           'command("minimize",{address:"0xabc",workspace:1,pinned:true})',
+                           'command("restore",{address:"0xabc",workspaceName:"special:scratchpad"})',
+                           'command("restore",{address:"0xabc",workspaceName:"special:quickshell-minimized-0"})',
+                           'command("unknown",{address:"0xabc",workspace:1})'):
+            self.assertEqual(self.engine.evaluate(expression).toString(), "")
+
+    def test_native_desktop_setting_commands(self):
+        result = self.engine.evaluate((ROOT / "host/Services/DesktopSettings.js").read_text())
+        self.assertFalse(result.isError(), result.toString())
+        for key, value, expected in (
+            ("tileGap", 12, "hl.config({general={gaps_in=12}})"),
+            ("outerGap", 24, "hl.config({general={gaps_out=24}})"),
+            ("windowBorderWidth", 3, "hl.config({general={border_size=3}})"),
+            ("windowRadius", 0, "hl.config({decoration={rounding=0}})"),
+            ("windowRadius", 24, "hl.config({decoration={rounding=24}})"),
+            ("windowOpacity", 40, "hl.config({decoration={active_opacity=0.4,inactive_opacity=0.4}})"),
+            ("windowOpacity", 92, "hl.config({decoration={active_opacity=0.92,inactive_opacity=0.92}})"),
+            ("windowOpacity", 100, "hl.config({decoration={active_opacity=1,inactive_opacity=1}})"),
+            ("mainPaneRatio", 56, "hl.config({master={mfact=0.56}})"),
+            ("tilingLayout", '"Split"', 'hl.config({general={layout="dwindle"}})'),
+            ("tilingLayout", '"Columns"', 'hl.config({general={layout="master"},master={orientation="left"}})'),
+            ("tilingLayout", '"Centered"', 'hl.config({general={layout="master"},master={orientation="center"}})'),
+        ):
+            self.assertEqual(self.engine.evaluate(f'command("{key}", {value})').toString(), expected)
+        for expression in ('command("tileGap", -1)', 'command("outerGap", 65)',
+                           'command("windowBorderWidth", 9)', 'command("mainPaneRatio", 29)',
+                           'command("tileGap", 1.5)', 'command("unknown", 1)',
+                           'command("windowRadius", -1)', 'command("windowRadius", 25)',
+                           'command("windowRadius", 1.5)', 'command("windowOpacity", 39)',
+                           'command("windowOpacity", 101)', 'command("windowOpacity", 90.5)',
+                           'command("windowOpacity", NaN)', 'command("windowOpacity", "92")',
+                           'command("tilingLayout", "Auto")', 'command("tilingLayout", "bad lua")'):
+            self.assertEqual(self.engine.evaluate(expression).toString(), "")
+
+    def test_focus_border_tracks_theme_accent(self):
+        source = (ROOT / "host/Services/ProductionDesktopData.qml").read_text()
+        sync = source.split("function syncDesktopSettings() {", 1)[1].split("\n    }", 1)[0]
+        self.engine.evaluate((ROOT / "host/Services/DesktopSettings.js").read_text())
+        result = self.engine.evaluate('''
+            var DesktopSettings = {command:command};
+            var Ui = {Theme:{palette:{accent:"#65e5bf"}}};
+            var profileSettings = {ready:true,applying:false,glassEnabled:true,tilingKeys:[],snapshot:function() {return {windowOpacity:92,windowRadius:8};}};
+            var desktopControlsEnabled = true;
+            var desktopSettingsObserved = null;
+            var desktopSettingsQueue = {};
+            var desktopSettingsTimer = {restart:function() {}};
+            var syncBorder = function() {%s};
+            syncBorder();
+        ''' % sync)
+        self.assertFalse(result.isError(), result.toString())
+        self.assertEqual(self.engine.evaluate('desktopSettingsQueue.focusBorderColor').toString(), 'hl.config({general={col={active_border="rgba(65e5bfff)"}}})')
+        self.engine.evaluate('desktopSettingsQueue={}; Ui.Theme.palette.accent="#ABCDEF"; syncBorder()')
+        self.assertEqual(self.engine.evaluate('Object.keys(desktopSettingsQueue)').toVariant(), ["focusBorderColor"])
+        self.assertEqual(self.engine.evaluate('desktopSettingsQueue.focusBorderColor').toString(), 'hl.config({general={col={active_border="rgba(ABCDEFff)"}}})')
+        self.engine.evaluate('desktopSettingsQueue={}; syncBorder()')
+        self.assertEqual(self.engine.evaluate('Object.keys(desktopSettingsQueue)').toVariant(), [])
+        for value in ('"red"', '"#abcd"', '"#12345678"', '"#ffffff);bad"', 'null', '12'):
+            self.assertEqual(self.engine.evaluate('command("focusBorderColor",' + value + ')').toString(), "")
+        self.assertIn('function onPaletteChanged() { terminalPaletteTimer.restart(); root.syncDesktopSettings(); }', source)
+        reload_sync = source.split("function syncFocusBorder() {", 1)[1].split("\n    }", 1)[0]
+        result = self.engine.evaluate('var resyncBorder = function() {' + reload_sync + '}; resyncBorder()')
+        self.assertFalse(result.isError(), result.toString())
+        self.assertEqual(self.engine.evaluate('Object.keys(desktopSettingsQueue)').toVariant(), ["focusBorderColor"])
+        self.engine.evaluate('desktopSettingsQueue={}; desktopControlsEnabled=false; resyncBorder()')
+        self.assertEqual(self.engine.evaluate('Object.keys(desktopSettingsQueue)').toVariant(), [])
+        self.assertIn('if (event.name === "configreloaded") root.syncFocusBorder();', source)
+
+    def test_panel_slide_and_volume_animation_modes(self):
+        profiles = self.window.findChild(QObject, "profileSettings")
+        drawer = self.item("volumeDrawer")
+        control = self.item("barVolumeControl")
+        desktop = self.item("desktop")
+        drawer.setProperty("slide", True)
+        profiles.setProperty("animationDuration", 600)
+        for style in ("Smooth", "Stepped"):
+            profiles.setProperty("animationStyle", style)
+            control.setProperty("hoverExpanded", True)
+            desktop.setProperty("openPanel", "volume")
+            QTest.qWait(160)
+            for animated, rendered_name in ((drawer, "steppedProgress"), (control, "revealProgress")):
+                progress = animated.property("progress")
+                rendered = animated.property(rendered_name)
+                self.assertGreater(progress, 0)
+                self.assertLess(progress, 1)
+                if style == "Stepped":
+                    self.assertAlmostEqual(rendered * 6, round(rendered * 6))
+                    self.assertLessEqual(rendered, progress)
+                else:
+                    self.assertAlmostEqual(rendered, progress)
+            surface = self.item("volumeDrawerSurface")
+            self.assertAlmostEqual(surface.x(), drawer.width() * (1 - drawer.property("steppedProgress")))
+            self.assertGreater(surface.x(), 0)
+            self.capture("panel-slide-" + style.lower())
+            QTest.qWait(500)
+            self.assertEqual(surface.x(), 0)
+            desktop.setProperty("openPanel", "")
+            desktop.forceActiveFocus()
+            control.setProperty("hoverExpanded", False)
+            QTest.qWait(160)
+            self.assertTrue(drawer.isVisible())
+            self.assertGreater(surface.x(), 0)
+            QTest.qWait(500)
+            self.assertFalse(drawer.isVisible())
+            self.assertEqual(control.property("progress"), 0)
+        for instant_mode in ("Off", "Reduced"):
+            profiles.setProperty("animationStyle", "Off" if instant_mode == "Off" else "Smooth")
+            self.fixtures.setProperty("reducedMotion", instant_mode == "Reduced")
+            desktop.setProperty("openPanel", "volume")
+            self.assertEqual(drawer.property("progress"), 1)
+            desktop.setProperty("openPanel", "")
+            self.assertEqual(drawer.property("progress"), 0)
+
+    def test_compact_hint_follows_theme(self):
+        component = QQmlComponent(self.engine)
+        component.setData(b'''import QtQuick
+import "../shell/Components" as Ui
+Item {
+    property var palette: Ui.Theme.palette
+    function setPalette(value) { Ui.Theme.palette = value; }
+    Ui.Hint { objectName: "testHint"; visible: false; text: "A very long component hint ".repeat(30) }
+}''', QUrl.fromLocalFile(str(ROOT / "tests" / "hint-test.qml")))
+        self.assertFalse(component.isError(), [error.toString() for error in component.errors()])
+        holder = component.create()
+        self.assertIsNotNone(holder)
+        hint = holder.findChild(QObject, "testHint")
+        original = holder.property("palette")
+        try:
+            self.app.processEvents()
+            self.assertLessEqual(hint.property("implicitWidth"), 240)
+            self.assertLessEqual(hint.property("implicitHeight"), 44)
+            self.assertEqual(hint.property("delay"), 650)
+            self.assertEqual(hint.property("timeout"), 4000)
+            for ink, paper in (("#fafafa", "#202020"), ("#202020", "#fafafa")):
+                holder.setPalette({"ink": ink, "paper": paper, "line": "#777777", "muted": "#888888", "hover": "#444444", "stage": "#333333", "accent": paper})
+                self.assertEqual(hint.property("background").property("color"), QColor(ink))
+                self.assertEqual(hint.property("contentItem").property("color"), QColor(paper))
+        finally:
+            holder.setPalette(original)
+            holder.deleteLater()
+
+    def test_bar_hover_volume_and_no_hints(self):
+        self.fixtures.setProperty("reducedMotion", True)
+        for width in (320, 640, 1920, 5120):
+            self.studio.setProperty("customWidth", width)
+            QTest.mouseMove(self.window, QPointF(0, 0).toPoint())
+            self.item("desktop").forceActiveFocus()
+            QTest.qWait(50)
+            button = self.item("volumeButton")
+            control = self.item("barVolumeControl")
+            slider = self.item("barVolumeSlider")
+            self.assertFalse(control.property("expanded"))
+            original_center = button.mapToScene(QPointF(button.width() / 2, button.height() / 2))
+            QTest.mouseMove(self.window, original_center.toPoint())
+            QTest.qWait(150)
+            self.assertTrue(control.property("expanded"))
+            self.assertTrue(slider.isVisible())
+            self.assertGreater(slider.width(), 0)
+            value_label = self.item("barVolumeValue")
+            self.assertGreaterEqual(slider.x(), button.x() + button.width())
+            self.assertGreaterEqual(value_label.x(), slider.x() + slider.width())
+            QTest.mouseMove(self.window, slider.mapToScene(QPointF(slider.width() / 2, slider.height() / 2)).toPoint())
+            QTest.qWait(30)
+            self.assertTrue(control.property("expanded"))
+            before = self.fixtures.property("volume")
+            slider.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+            QTest.keyClick(self.window, Qt.Key.Key_Right)
+            self.assertEqual(self.fixtures.property("volume"), before + 1)
+            self.item("desktop").forceActiveFocus()
+            QTest.mouseMove(self.window, QPointF(0, 0).toPoint())
+            QTest.qWait(30)
+            self.assertFalse(control.property("expanded"))
+            self.assertLessEqual(self.item("barCenter").width(), 374)
+        button = self.item("volumeButton")
+        QTest.mouseMove(self.window, button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint())
+        QTest.qWait(30)
+        self.click("volumeButton")
+        self.assertEqual(self.item("desktop").property("openPanel"), "volume")
+        for folder in ("shell", "host", "preview"):
+            for path in (ROOT / folder).rglob("*.qml"):
+                if path == ROOT / "shell/Components/Hint.qml":
+                    continue
+                self.assertNotIn("ToolTip", path.read_text(), str(path))
+
+    def test_bar_network_action(self):
+        bar = self.item("barLeft").parentItem()
+        bar.setProperty("showNetworkButton", True)
+        self.engine.globalObject().setProperty("testNetworkBar", self.engine.newQObject(bar))
+        self.engine.evaluate("var networkRequests = 0; testNetworkBar.networkRequested.connect(function() { networkRequests++; });")
+        QTest.qWait(30)
+        self.assertEqual(self.item("barNetwork").property("iconName"), "wifi")
+        self.click("barNetwork")
+        self.assertEqual(self.engine.evaluate("networkRequests").toInt(), 1)
+
+    def test_production_home_disables_preview_only_controls(self):
+        self.home_action("homeTab")
+        self.item("homePanel").setProperty("production", True)
+        QTest.qWait(30)
+        for name in ("homeSettings", "homeProfile",
+                     "wifiEnabledSwitch", "bluetoothEnabledSwitch", "caffeineEnabledSwitch",
+                     "nightLightEnabledSwitch", "dndEnabledSwitch", "powerSaverEnabledSwitch"):
+            with self.subTest(control=name):
+                self.assertFalse(self.item(name).isEnabled())
+        self.assertFalse(self.item("homeActivities").isVisible())
+        self.engine.globalObject().setProperty("homeService", self.engine.newQObject(self.fixtures))
+        self.engine.evaluate("homeService.desktopData.controlsEnabled = true;")
+        QTest.qWait(30)
+        for name in ("homeProfile", "wifiEnabledSwitch", "bluetoothEnabledSwitch", "caffeineEnabledSwitch",
+                     "nightLightEnabledSwitch", "dndEnabledSwitch", "powerSaverEnabledSwitch"):
+            self.assertTrue(self.item(name).isEnabled(), name)
+        navigation = self.item("homeNavigation")
+        self.assertFalse(navigation.inherits("QQuickScrollView"))
+        for name in ("homeTab", "homeAudio", "homeDisplayTab", "homeNetworkTab", "homeSystemSummary",
+                     "homePowerTab", "homeWeatherTab", "homeNotificationsTab"):
+            button = self.item(name)
+            self.assertGreaterEqual(button.mapToItem(navigation, QPointF(0, 0)).y(), 0)
+            self.assertLessEqual(button.mapToItem(navigation, QPointF(0, button.height())).y(), navigation.height())
+        self.item("homePanel").setProperty("production", False)
+        QTest.qWait(30)
+        self.assertTrue(self.item("homeSettings").isEnabled())
+        self.assertTrue(self.item("homeActivities").isVisible())
 
     def test_audio_dropdown_long_labels_bounds(self):
         self.fixtures.setProperty("reducedMotion", True)
@@ -2396,6 +3003,104 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(self.fixtures.property("workspace"), 1)
         self.assertEqual(self.fixtures.property("wallpaper"), 0)
         self.assertTrue(self.fixtures.property("playing"))
+
+    def test_monitor_wallpaper_picker(self):
+        self.fixtures.setProperty("reducedMotion", True)
+        self.engine.globalObject().setProperty("displayWallpapers", self.engine.newQObject(self.fixtures))
+        self.engine.evaluate('displayWallpapers.wallpaperMonitors = ["DP-2", "DP-3"]')
+        original = self.fixtures.property("wallpaper")
+        self.click("wallpaperButton")
+        QTest.qWait(100)
+        picker = self.item("wallpaperPanelSurface")
+        self.engine.globalObject().setProperty("displayPicker", self.engine.newQObject(picker))
+        self.click("wallpaperDisplay")
+        QTest.keyClick(self.window, Qt.Key_Down)
+        QTest.keyClick(self.window, Qt.Key_Return)
+        QTest.qWait(30)
+        self.assertEqual(picker.property("targetMonitor"), "DP-2")
+        self.click("wallpaperTile1")
+        self.assertEqual(self.fixtures.property("wallpaper"), original)
+        self.assertEqual(self.engine.evaluate('displayWallpapers.profileSettings.currentProfile.wallpaperFiles["DP-2"]').toString(),
+                         self.engine.evaluate('String(displayWallpapers.wallpapers[1].source)').toString())
+        self.assertEqual(self.engine.evaluate('displayWallpapers.wallpaperIndexForMonitor("DP-3")').toInt(), original)
+        self.assertEqual(picker.property("selected"), 1)
+        self.click("wallpaperSourceWallpaper")
+        self.assertEqual(self.engine.evaluate('displayWallpapers.profileSettings.currentProfile.paletteMonitor').toString(), "DP-2")
+        sampler = self.window.findChild(QObject, "wallpaperPalette")
+        self.assertEqual(sampler.property("source").toString(), self.engine.evaluate('String(displayWallpapers.wallpapers[1].source)').toString())
+        self.click("resetMonitorWallpaper")
+        self.assertEqual(picker.property("selected"), original)
+        self.click("wallpaperTile2")
+        self.engine.evaluate('displayPicker.targetMonitor = "DP-3"')
+        QTest.qWait(30)
+        self.click("wallpaperTile1")
+        self.assertEqual(self.engine.evaluate('displayWallpapers.wallpaperIndexForMonitor("DP-2")').toInt(), 2)
+        self.assertEqual(self.engine.evaluate('displayWallpapers.wallpaperIndexForMonitor("DP-3")').toInt(), 1)
+        self.capture("wallpaper-per-monitor")
+        self.engine.evaluate('displayPicker.targetMonitor = ""')
+        QTest.qWait(30)
+        self.click("wallpaperTile0")
+        self.assertEqual(self.engine.evaluate('displayWallpapers.profileSettings.currentProfile.wallpaperFiles').toVariant(), {})
+        self.engine.evaluate('displayPicker.targetMonitor = "DP-3"; displayWallpapers.wallpaperMonitors = ["DP-2"]')
+        QTest.qWait(30)
+        self.assertEqual(picker.property("targetMonitor"), "")
+
+    def test_monitor_wallpaper_palette_source(self):
+        profiles = self.window.findChild(QObject, "profileSettings")
+        self.engine.globalObject().setProperty("paletteProfiles", self.engine.newQObject(profiles))
+
+        def evaluate(script):
+            result = self.engine.evaluate(script)
+            self.assertFalse(result.isError(), result.toString())
+            return result
+
+        evaluate('paletteProfiles.selectMonitorWallpaper("DP-2","file:///wide.png"); paletteProfiles.useWallpaperPalette("DP-2")')
+        self.assertEqual(evaluate('paletteProfiles.paletteWallpaperSource("file:///default.png")').toString(), "file:///wide.png")
+        evaluate('paletteProfiles.selectMonitorWallpaper("DP-3","file:///small.png"); paletteProfiles.save()')
+        self.assertEqual(evaluate('paletteProfiles.paletteWallpaperSource("file:///default.png")').toString(), "file:///small.png")
+        evaluate('paletteProfiles.selectMonitorWallpaper("DP-3","")')
+        self.assertEqual(evaluate('paletteProfiles.paletteWallpaperSource("file:///default.png")').toString(), "file:///default.png")
+        profiles.revert()
+        self.assertEqual(evaluate('paletteProfiles.currentProfile.paletteMonitor').toString(), "DP-3")
+        evaluate('paletteProfiles.useWallpaperPalette("")')
+        self.assertEqual(evaluate('paletteProfiles.paletteWallpaperSource("file:///default.png")').toString(), "file:///default.png")
+
+    def test_monitor_wallpaper_profiles(self):
+        profiles = self.window.findChild(QObject, "profileSettings")
+        self.engine.globalObject().setProperty("monitorProfiles", self.engine.newQObject(profiles))
+
+        def evaluate(script):
+            result = self.engine.evaluate(script)
+            self.assertFalse(result.isError(), result.toString())
+            return result
+
+        evaluate('monitorProfiles.selectWallpaper(0,"file:///default.png"); monitorProfiles.selectMonitorWallpaper("DP-2","file:///wide.png")')
+        self.assertEqual(evaluate('monitorProfiles.wallpaperForMonitor("DP-2","file:///default.png")').toString(), "file:///wide.png")
+        self.assertEqual(evaluate('monitorProfiles.wallpaperForMonitor("DP-3","file:///default.png")').toString(), "file:///default.png")
+        evaluate('monitorProfiles.selectMonitorWallpaper("DP-3","file:///other.png"); monitorProfiles.save()')
+        evaluate('monitorProfiles.selectMonitorWallpaper("DP-2","")')
+        self.assertEqual(evaluate('monitorProfiles.wallpaperForMonitor("DP-2","file:///default.png")').toString(), "file:///default.png")
+        profiles.revert()
+        self.assertEqual(evaluate('monitorProfiles.currentProfile.wallpaperFiles').toVariant(), {"DP-2":"file:///wide.png", "DP-3":"file:///other.png"})
+        evaluate('monitorProfiles.selectMonitorWallpaper("DP-2","https://invalid/image.png"); monitorProfiles.selectMonitorWallpaper("__proto__","file:///bad.png")')
+        self.assertEqual(evaluate('monitorProfiles.currentProfile.wallpaperFiles').toVariant(), {"DP-2":"file:///wide.png", "DP-3":"file:///other.png"})
+        profiles.setProperty("activeName", "Gaming")
+        self.assertEqual(evaluate('monitorProfiles.wallpaperForMonitor("DP-2","default")').toString(), "default")
+        evaluate('monitorProfiles.copyFrom("Work",["appearance"])')
+        self.assertEqual(evaluate('monitorProfiles.currentProfile.wallpaperFiles["DP-2"]').toString(), "file:///wide.png")
+        evaluate('monitorProfiles.selectWallpaper(0,"file:///all.png")')
+        self.assertEqual(evaluate('monitorProfiles.currentProfile.wallpaperFiles').toVariant(), {})
+        profiles.setProperty("activeName", "Work")
+        restored_engine = QQmlApplicationEngine()
+        restored_engine.warnings.connect(lambda messages: self.warnings.extend(str(message) for message in messages))
+        restored_engine.load(QUrl.fromLocalFile(str(ROOT / "preview" / "QtHost.qml")))
+        restored_window = restored_engine.rootObjects()[0]
+        try:
+            restored = restored_window.findChild(QObject, "profileSettings")
+            self.assertEqual(restored.property("currentProfile").toVariant()["wallpaperFiles"], {"DP-2":"file:///wide.png", "DP-3":"file:///other.png"})
+        finally:
+            restored_window.close()
+            restored_engine.deleteLater()
 
     def test_wallpaper_folders_and_palettes(self):
         self.fixtures.setProperty("reducedMotion", True)
@@ -3113,6 +3818,136 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(self.fixtures.property("aiStatus"), "Error")
         self.assertEqual(self.fixtures.property("loadedModelIndex"), -1)
         self.assertTrue(self.item("aiStart").isEnabled())
+        self.item("aiPanel").setProperty("actionsEnabled", False)
+        for name in ("modelPicker", "aiStart", "aiStop", "aiSwitch", "aiConfirm"):
+            self.assertFalse(self.item(name).isEnabled(), name)
+        self.fixtures.setProperty("runningRequests", -1)
+        self.item("aiPanel").setProperty("pendingAction", "stop")
+        self.assertFalse(self.item("aiConfirm").isEnabled())
+
+    def test_ai_panel_uses_preloaded_nonfirst_default(self):
+        component = QQmlComponent(self.engine)
+        component.setData(b'''import QtQuick
+import "../shell/Modules/LocalAI"
+LocalAIPanel {
+    service: QtObject {
+        property bool aiManaged: true
+        property var models: ["Gemma", "Qwen3.8"]
+        property int loadedModelIndex: 1
+        property string loadedModelName: "qwen3.8-27b"
+        property string runtimeLabel: "vLLM"
+        property string aiStatus: "ready"
+        property bool aiBusy: false
+        property int runningRequests: 0
+        property string aiError: ""
+        property real tokensPerSecond: 0
+        property bool reducedMotion: true
+        property bool telemetryAvailable: false
+        property var gpus: []
+        property QtObject modelManager: QtObject {
+            property int defaultModelIndex: 1
+            property var loadingProgress: null
+            property int elapsedSeconds: -1
+            property bool external: false
+            property bool canStart: false
+            property bool canStop: true
+            property bool canSwitch: true
+            property bool canAdopt: false
+            property string profileName: "Work"
+            property var profileDefaults: ({})
+            property var presets: [{id: "vllm/gemma"}, {id: "vllm/qwen38"}]
+            property string clientStatus: "OpenCode configured"
+            function canConfigure(index) { return index === 1; }
+        }
+    }
+}''', QUrl.fromLocalFile(str(ROOT / "tests/ai-panel-test.qml")))
+        panel = component.create()
+        self.assertIsNotNone(panel, str(component.errors()))
+        panel.setParentItem(self.window.contentItem())
+        try:
+            self.assertEqual(panel.property("candidateIndex"), 1)
+            picker = panel.findChild(QObject, "modelPicker")
+            self.assertEqual(picker.property("currentIndex"), 1)
+            manager = panel.property("service").property("modelManager")
+            picker.setProperty("currentIndex", 0)
+            picker.activated.emit(0)
+            manager.setProperty("defaultModelIndex", 0)
+            manager.setProperty("defaultModelIndex", 1)
+            self.assertEqual(panel.property("candidateIndex"), 0)
+            panel.setVisible(False)
+            panel.setVisible(True)
+            self.assertEqual(panel.property("candidateIndex"), 1)
+        finally:
+            panel.deleteLater()
+
+    def test_ai_settings_restart_and_compact_layout(self):
+        self.click("aiButton")
+        QTest.qWait(280)
+        panel = self.item("aiPanel")
+        self.assertEqual(panel.property("candidateIndex"), self.fixtures.property("loadedModelIndex"))
+        self.assertTrue(self.item("aiSwitch").isEnabled())
+        self.click("aiSwitch")
+        self.assertEqual(panel.property("pendingAction"), "switch")
+        self.click("aiCancel")
+        original_height = panel.height()
+        settings_button = self.item("aiSettings")
+        original_position = settings_button.mapToScene(QPointF(0, 0))
+        self.click("aiSettings")
+        self.assertTrue(self.item("aiSettingsSection").isVisible())
+        self.assertEqual(panel.height(), original_height)
+        self.assertEqual(settings_button.mapToScene(QPointF(0, 0)), original_position)
+        self.assertTrue(self.item("aiConfigure").isVisible())
+        self.assertEqual(self.item("aiDefaultModel").property("currentIndex"), 0)
+        panel.setProperty("actionsEnabled", False)
+        self.assertTrue(self.item("aiSettings").isEnabled())
+        self.assertFalse(self.item("aiSwitch").isEnabled())
+        self.click("aiSettings")
+        self.assertFalse(self.item("aiSettingsSection").isVisible())
+        self.assertEqual(panel.height(), original_height)
+        for width in (320, 375, 414, 768):
+            panel.setImplicitWidth(width)
+            QTest.qWait(50)
+            self.assertEqual(panel.width(), width)
+            original_height = panel.height()
+            original_position = settings_button.mapToScene(QPointF(0, 0))
+            for opened in (True, False, True, False):
+                self.click("aiSettings")
+                self.assertEqual(panel.property("settingsOpen"), opened)
+                self.assertEqual(settings_button.property("checked"), opened)
+                self.assertEqual(self.item("aiTelemetrySection").isVisible(), not opened)
+                self.assertEqual(panel.height(), original_height, width)
+                self.assertEqual(settings_button.mapToScene(QPointF(0, 0)), original_position, width)
+                if opened:
+                    configure = self.item("aiConfigure")
+                    position = configure.mapToItem(panel, QPointF(0, 0))
+                    self.assertLessEqual(position.y() + configure.height(), panel.height(), width)
+                    self.assertLessEqual(position.x() + configure.width(), panel.width(), width)
+                    self.capture(f"local-ai-settings-{width}")
+            for name in ("loadedModel", "modelPicker", "tokenRate", "vramMeter0", "gpuMeter1", "aiSettings"):
+                child = self.item(name)
+                left = child.mapToItem(panel, QPointF(0, 0)).x()
+                self.assertGreaterEqual(left, 0, (width, name))
+                self.assertLessEqual(left + child.width(), panel.width(), (width, name))
+            self.capture(f"local-ai-compact-{width}")
+        self.assertLess(panel.implicitHeight(), 650)
+
+    def test_ai_loading_progress_measured_and_indeterminate(self):
+        self.click("aiButton")
+        QTest.qWait(280)
+        panel = self.item("aiPanel")
+        panel.setProperty("loadingProgress", {"label": "Loading model weights", "fraction": 0.5, "detail": "1 / 2 shards"})
+        self.assertTrue(self.item("aiLoadingProgress").isVisible())
+        self.assertEqual(self.item("aiLoadingProgress").property("value"), 0.5)
+        self.assertFalse(self.item("aiLoadingProgress").property("indeterminate"))
+        self.assertEqual(self.item("aiLoadingPercent").property("text"), "50%")
+        self.capture("local-ai-loading-measured")
+        panel.setProperty("loadingProgress", {"label": "Compiling model kernels", "fraction": None, "detail": ""})
+        self.assertTrue(self.item("aiLoadingProgress").property("indeterminate"))
+        self.assertEqual(self.item("aiLoadingPercent").property("text"), "")
+        self.assertEqual(self.item("aiLoadingStage").property("text"), "Compiling model kernels")
+        self.capture("local-ai-loading-indeterminate")
+        panel.setProperty("loadingProgress", None)
+        self.assertFalse(self.item("aiLoadingProgress").isVisible())
 
     def test_meter_bounds(self):
         meter = self.item("vramMeter0")
@@ -3135,7 +3970,7 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(self.item("wifiEnabledSwitchBackground").property("color"), QColor("#efefeb"))
         for volume in (0, 35, 100):
             self.fixtures.setProperty("volume", volume)
-            for name in ("controlVolume", "volumeSlider"):
+            for name in ("volumeSlider",):
                 track = self.item(name + "Track")
                 fill = self.item(name + "Fill")
                 self.assertEqual(track.property("color"), QColor("#1c1c1c"))
@@ -3242,6 +4077,31 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(self.item("barTrackTitle").property("text"), "No media")
         QTest.keyClick(self.window, Qt.Key.Key_K, modifiers)
         self.assertEqual(self.fixtures.property("trackIndex"), 1)
+
+    def test_native_shortcut_recorder_delegates_without_local_activation(self):
+        modifiers = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+        QTest.keyClick(self.window, Qt.Key.Key_S, modifiers)
+        QTest.qWait(280)
+        self.click("shortcutsTab")
+        shortcuts = self.item("shortcutSettings")
+        shortcuts.setProperty("nativeBackend", True)
+        shortcuts.setProperty("ready", True)
+        requested = []
+        activated = []
+        shortcuts.bindingRequested.connect(lambda key, sequence: requested.append((key, sequence)))
+        shortcuts.activated.connect(activated.append)
+        self.click("bind_ai")
+        QTest.keyClick(self.settings_window, Qt.Key.Key_Space, Qt.KeyboardModifier.MetaModifier)
+        self.assertEqual(requested, [("ai", "Meta+Space")])
+        self.assertEqual(self.item("bind_ai").property("text"), "Press keys...")
+        self.assertEqual(shortcuts.property("overrides").toVariant(), {})
+        shortcuts.setProperty("recording", "")
+        QTest.keyClick(self.settings_window, Qt.Key.Key_W, modifiers)
+        self.assertEqual(activated, [])
+        shortcuts.setProperty("busy", True)
+        self.engine.globalObject().setProperty("nativeRecorder", self.engine.newQObject(shortcuts))
+        self.assertFalse(self.engine.evaluate('nativeRecorder.saveBinding("ai", "Meta+Tab")').toBool())
+        self.assertEqual(len(requested), 1)
 
     def test_shortcut_recording_conflict_and_persistence(self):
         modifiers = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
@@ -3420,10 +4280,20 @@ class PreviewTests(unittest.TestCase):
 
     def test_bar_progressive_width(self):
         desktop = self.item("desktop")
+        gpu_button = self.item("barGpu0")
+        self.engine.globalObject().setProperty("gpuButton", self.engine.newQObject(gpu_button))
+        result = self.engine.evaluate('gpuButton.gpu.name = "NVIDIA GeForce RTX 5090"; gpuButton.gpuChanged();')
+        self.assertFalse(result.isError(), result.toString())
         for width in (640, 800, 878, 880, 958, 960, 1024, 1078, 1080, 1158, 1160, 1218, 1220, 1280, 1298, 1300, 1398, 1400, 1518, 1520, 1678, 1680, 1758, 1760, 1918, 1920, 1998, 2000, 2478, 2480, 2560, 3078, 3080, 3158, 3160, 3440, 3678, 3680, 5120):
             with self.subTest(width=width):
                 desktop.setWidth(width)
                 QTest.qWait(20)
+                if width >= 1600:
+                    self.assertTrue(gpu_button.property("text").startswith("RTX 5090 "))
+                    self.assertIn("%", gpu_button.property("text"))
+                    self.assertIn("NVIDIA GeForce RTX 5090", gpu_button.property("description"))
+                    content = gpu_button.property("contentItem")
+                    self.assertLessEqual(content.implicitWidth(), content.width() + 1)
                 left = self.item("barLeft")
                 center = self.item("barCenter")
                 right = self.item("barRight")
@@ -3511,6 +4381,91 @@ class PreviewTests(unittest.TestCase):
         self.click("controlsButton")
         self.assertEqual(desktop.property("openPanel"), "controls")
         self.assertFalse(self.item("calendarDrawer").property("opened"))
+
+    def test_gpu_history_and_partial_telemetry(self):
+        self.fixtures.setProperty("reducedMotion", True)
+        self.click("barGpu0")
+        panel = self.item("gpuPanelSurface")
+        self.engine.globalObject().setProperty("gpuPanel", self.engine.newQObject(panel))
+        result = self.engine.evaluate('''
+            gpuPanel.gpu = {id:"test",name:"NVIDIA GeForce RTX 5090",utilization:null,
+                usedGiB:4,totalGiB:8,memoryType:null,driver:"615.71.09",pciAddress:"00000000:01:00.0",
+                coreClock:"1207 MHz",fanSpeed:0,powerLimit:320};
+            gpuPanel.metrics = [
+                {key:"testusage",title:"Test / Utilization",unit:"%",value:null,maximum:100},
+                {key:"testvram",title:"Test / VRAM",unit:" MiB",value:4096,maximum:8192},
+                {key:"testtemp",title:"Test / Temperature",unit:" C",value:54,maximum:110},
+                {key:"testpower",title:"Test / Power",unit:" W",value:80,maximum:320}
+            ];
+            var gpuHistory = {};
+            gpuPanel.metrics.forEach(metric => gpuHistory[metric.key] = Array.from({length:60}, (_,index) => index === 20 ? null : metric.maximum / 2));
+            gpuPanel.history = gpuHistory;
+            gpuPanel.processes = Array.from({length:7}, (_,index) => ({gpu:"test",pid:index+1,name:"/opt/compute/long-running-model-worker-with-an-unbroken-name",memoryMiB:(index+1)*1024})).concat([
+                {gpu:"other",pid:99,name:"other-gpu-worker",memoryMiB:32768},
+                {gpu:"test",pid:8,name:"unknown-memory",memoryMiB:null}
+            ]);
+            gpuPanel.processes = gpuPanel.processes.map(entry => entry.pid === 7 ? Object.assign({},entry,{name:"/usr/lib/electron42/electron --type=gpu-process --user-data-dir=/home/test/config"}) : entry);
+        ''')
+        self.assertFalse(result.isError(), result.toString())
+        self.assertFalse(self.item("gpuDetailsUtilization").property("available"))
+        self.assertTrue(self.item("gpuDetailsVram").property("available"))
+        self.assertEqual(self.item("gpuDetailsMemory").property("text"), "4.0 / 8 GiB")
+        details = panel.property("details").toVariant()
+        self.assertNotIn("Memory type", [entry["label"] for entry in details])
+        self.assertIn({"label": "Fan", "value": "0%"}, details)
+        self.assertIsNone(self.window.findChild(QObject, "gpuDetailsToggle"))
+        self.assertTrue(self.item("gpuDeviceDetails").isVisible())
+        self.assertEqual([entry["pid"] for entry in panel.property("topProcesses").toVariant()], [7, 6, 5, 4, 3])
+        self.assertEqual(len(panel.property("processes").toVariant()), 9)
+        self.assertEqual(self.item("gpuProcessMemory0").property("text"), "7.0 GiB")
+        self.assertEqual(self.item("gpuProcessName0").property("text"), "electron")
+        self.assertIsNone(self.window.findChild(QObject, "gpuHistorytestusage"))
+        self.assertIsNone(self.window.findChild(QObject, "gpuHistorytestvram"))
+        colors = []
+        for key in ("temp", "power"):
+            graph = self.item("gpuHistorytest" + key)
+            self.engine.globalObject().setProperty("gpuGraph", self.engine.newQObject(graph))
+            colors.append(self.engine.evaluate("String(gpuGraph.lineColor(0))").toString())
+            series = graph.property("series")[0]
+            self.assertIsNone(series["samples"][20])
+            self.assertTrue(graph.property("current"))
+        self.assertEqual(len(set(colors)), 2)
+        for width in (320, 414, 768):
+            self.studio.setProperty("customWidth", width)
+            QTest.qWait(50)
+            pending = [panel]
+            while pending:
+                child = pending.pop()
+                pending.extend(child.childItems())
+                if child.isVisible() and child.inherits("QQuickText"):
+                    self.assertLessEqual(child.property("contentWidth"), child.width() + 1, child.property("text"))
+                    self.assertLessEqual(child.property("contentHeight"), child.height() + 1, child.property("text"))
+            self.capture("gpu-history-" + str(width))
+            processes = self.item("gpuProcessList")
+            info = self.item("gpuDeviceDetails")
+            gap = info.mapToItem(panel, QPointF(0, 0)).y() - processes.mapToItem(panel, QPointF(0, processes.height())).y()
+            self.assertGreaterEqual(gap, 28)
+            self.assertEqual(self.item("gpuInfoHeading").property("text"), "GPU info")
+            self.assertEqual(self.item("gpuProcessHeading").property("text"), "Compute processes")
+            content = self.item("gpuDetailsScroll").property("contentItem")
+            content.setProperty("contentY", max(0, content.property("contentHeight") - content.height()))
+            QTest.qWait(30)
+            self.capture("gpu-sections-" + str(width))
+            content.setProperty("contentY", 0)
+        panel.setProperty("telemetryAvailable", False)
+        self.assertEqual(panel.property("topProcesses").toVariant(), [])
+        self.assertEqual(self.item("gpuProcessEmpty").property("text"), "Telemetry unavailable")
+        for key in ("temp", "power"):
+            self.assertFalse(self.item("gpuHistorytest" + key).property("current"))
+        self.engine.evaluate("gpuPanel.gpu = Object.assign({}, gpuPanel.gpu, {utilization:42,usedGiB:NaN,totalGiB:NaN}); gpuPanel.telemetryAvailable = true;")
+        self.assertTrue(self.item("gpuDetailsUtilization").property("available"))
+        self.assertFalse(self.item("gpuDetailsVram").property("available"))
+        self.assertEqual(self.item("gpuDetailsMemory").property("text"), "Unavailable")
+        self.engine.evaluate('gpuPanel.gpu = Object.assign({}, gpuPanel.gpu, {id:"other"});')
+        self.assertEqual([entry["pid"] for entry in panel.property("topProcesses").toVariant()], [99])
+        self.engine.evaluate('gpuPanel.gpu = Object.assign({}, gpuPanel.gpu, {id:"empty"});')
+        self.assertEqual(panel.property("topProcesses").toVariant(), [])
+        self.assertEqual(self.item("gpuProcessEmpty").property("text"), "No compute processes reported")
 
     def test_gpu_inspector_and_compact_controls(self):
         self.fixtures.setProperty("reducedMotion", True)
@@ -3756,7 +4711,8 @@ class PreviewTests(unittest.TestCase):
         self.fixtures.setProperty("reducedMotion", True)
         self.fixtures.setProperty("dndEnabled", True)
         self.home_action("homeTab")
-        scroll = self.item("controlVolume").parentItem()
+        self.assertIsNone(self.window.findChild(QObject, "controlVolume"))
+        scroll = self.item("homeProfileHeader").parentItem()
         def visual_text(root):
             pending = [root]
             texts = []
@@ -3784,7 +4740,7 @@ class PreviewTests(unittest.TestCase):
                     self.assertEqual(wallpaper.size(), header.size())
                     self.assertEqual(wallpaper.position(), QPointF(0, 0))
                     self.assertAlmostEqual(header.width(), scroll.property("availableWidth"), delta=1)
-                    self.assertEqual(header.height(), 96)
+                    self.assertEqual(header.height(), 72)
                     self.engine.globalObject().setProperty("homeWallpaperImage", self.engine.newQObject(wallpaper))
                     self.assertTrue(self.engine.evaluate("homeWallpaperImage.status === 1").toBool())
                     start = wallpaper.mapToScene(QPointF(0, 0))
@@ -3801,8 +4757,6 @@ class PreviewTests(unittest.TestCase):
                     self.assertIn(self.fixtures.property("track") if available else "Nothing playing", media_text)
                     if not available:
                         self.assertIn("No player connected", media_text)
-                    output_text = visual_text(self.item("controlVolume").parentItem())
-                    self.assertIn(str(self.fixtures.property("volume")) + "%" if available else "Muted", output_text)
                     for key in keys:
                         tile = self.item(key + "Switch")
                         label = self.item(key + "SwitchLabel")
@@ -3814,7 +4768,7 @@ class PreviewTests(unittest.TestCase):
                     self.capture(f"home-polish-{state}-{width}")
                     flickable.setProperty("contentY", max(0, flickable.property("contentHeight") - flickable.height()))
                     QTest.qWait(30)
-                    for name in ("controlVolume", "homeProfile", "homeActivities", "powerSaverEnabledSwitch"):
+                    for name in ("homeProfile", "homeActivities", "powerSaverEnabledSwitch"):
                         control = self.item(name)
                         self.assertGreaterEqual(control.mapToItem(scroll, QPointF(0, 0)).y(), -1)
                         self.assertLessEqual(control.mapToItem(scroll, QPointF(control.width(), control.height())).y(), scroll.height() + 1)
@@ -4453,6 +5407,44 @@ class PreviewTests(unittest.TestCase):
         self.click("desktopTab")
         self.click("panelsFloating")
         self.assertTrue(self.window.findChild(QObject, "profileSettings").property("floatingPanels"))
+
+    def test_production_window_appearance_controls(self):
+        self.open_settings()
+        view = self.item("settingsSurface")
+        self.engine.globalObject().setProperty("nativeAppearance", self.engine.newQObject(view))
+        result = self.engine.evaluate('''
+            nativeAppearance.service = Object.assign({}, nativeAppearance.service, {
+                desktopControlsEnabled:true, wallpaperColorsAvailable:true, preferences:{notificationsEnabled:true}
+            });
+            nativeAppearance.production = true;
+        ''')
+        self.assertFalse(result.isError(), result.toString())
+        QTest.qWait(30)
+        profiles = self.window.findChild(QObject, "profileSettings")
+        profiles.setProperty("glassEnabled", True)
+        profiles.save()
+        original = {name: profiles.property(name) for name in ("windowOpacity", "windowRadius")}
+        for name in ("windowOpacity", "windowRadius"):
+            control = self.item(name + "Setting")
+            self.assertTrue(control.isEnabled(), name)
+            slider = self.item(name + "SettingSlider")
+            slider.forceActiveFocus()
+            before = profiles.property(name)
+            QTest.keyClick(self.settings_window, Qt.Key.Key_Right)
+            self.assertEqual(profiles.property(name), before + 1)
+        profiles.revert()
+        for name, value in original.items():
+            self.assertEqual(profiles.property(name), value)
+            self.assertEqual(self.item(name + "Setting").property("value"), value)
+        profiles.setProperty("glassEnabled", False)
+        self.assertFalse(self.item("windowOpacitySetting").isEnabled())
+        self.assertTrue(self.item("windowRadiusSetting").isEnabled())
+        profiles.setProperty("glassEnabled", True)
+        self.engine.evaluate('nativeAppearance.service = Object.assign({}, nativeAppearance.service, {desktopControlsEnabled:false});')
+        QTest.qWait(30)
+        self.assertFalse(self.item("windowOpacitySetting").isEnabled())
+        self.assertFalse(self.item("windowRadiusSetting").isEnabled())
+        self.assertTrue(self.item("panelOpacitySetting").isEnabled())
 
     def test_settings_drag_values_and_window_layout(self):
         self.fixtures.setProperty("reducedMotion", True)

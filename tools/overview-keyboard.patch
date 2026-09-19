@@ -1,0 +1,657 @@
+diff --git a/common/Config.qml b/common/Config.qml
+index 621b39d..ca68d96 100644
+--- a/common/Config.qml
++++ b/common/Config.qml
+@@ -105,10 +105,10 @@ Singleton {
+ 
+         property QtObject overview: QtObject {
+             property int rows: root.readInt("overview.rows", 2)
+-            property int columns: root.readInt("overview.columns", 5)
++            property int columns: root.readInt("overview.columns", 3)
+             property real scale: root.readReal("overview.scale", 0.16)
+             property bool enable: root.readBool("overview.enable", true)
+-            property bool hideEmptyRows: root.readBool("overview.hideEmptyRows", true)
++            property bool hideEmptyRows: root.readBool("overview.hideEmptyRows", false)
+             property bool closeOnFocusLoss: root.readBool("overview.closeOnFocusLoss", true)
+             property bool useWorkspaceMap: root.readBool("overview.useWorkspaceMap", false)
+             property var workspaceMap: root.read("overview.workspaceMap", [])
+diff --git a/common/widgets/StyledToolTip.qml b/common/widgets/StyledToolTip.qml
+index 4d4678c..17ba931 100644
+--- a/common/widgets/StyledToolTip.qml
++++ b/common/widgets/StyledToolTip.qml
+@@ -7,8 +7,12 @@ ToolTip {
+     property bool extraVisibleCondition: true
+     property bool alternativeVisibleCondition: false
+     readonly property bool internalVisibleCondition: (extraVisibleCondition && (parent.hovered === undefined || parent?.hovered)) || alternativeVisibleCondition
+-    verticalPadding: 5
+-    horizontalPadding: 10
++    verticalPadding: 0
++    horizontalPadding: 0
++    padding: 0
++    margins: 8
++    delay: 650
++    timeout: 4000
+     background: null
+ 
+     visible: internalVisibleCondition
+@@ -16,8 +20,8 @@ ToolTip {
+     contentItem: StyledToolTipContent {
+         id: contentItem
+         text: root.text
+-        shown: root.internalVisibleCondition
+-        horizontalPadding: root.horizontalPadding
+-        verticalPadding: root.verticalPadding
++        shown: root.visible
++        horizontalPadding: 8
++        verticalPadding: 5
+     }
+ }
+diff --git a/common/widgets/StyledToolTipContent.qml b/common/widgets/StyledToolTipContent.qml
+index b8c29c1..335f28e 100644
+--- a/common/widgets/StyledToolTipContent.qml
++++ b/common/widgets/StyledToolTipContent.qml
+@@ -8,8 +8,8 @@ Item {
+     property bool shown: false
+     property real horizontalPadding: 10
+     property real verticalPadding: 5
+-    implicitWidth: tooltipTextObject.implicitWidth + 2 * root.horizontalPadding
+-    implicitHeight: tooltipTextObject.implicitHeight + 2 * root.verticalPadding
++    implicitWidth: Math.min(240, tooltipTextObject.implicitWidth + 2 * root.horizontalPadding)
++    implicitHeight: tooltipTextObject.contentHeight + 2 * root.verticalPadding
+ 
+     property bool isVisible: backgroundRectangle.implicitHeight > 0
+ 
+@@ -20,30 +20,28 @@ Item {
+             horizontalCenter: root.horizontalCenter
+         }
+         color: Appearance?.colors.colTooltip ?? "#3C4043"
+-        radius: Appearance?.rounding.verysmall ?? 7
++        radius: 4
+         opacity: shown ? 1 : 0
+-        implicitWidth: shown ? (tooltipTextObject.implicitWidth + 2 * root.horizontalPadding) : 0
+-        implicitHeight: shown ? (tooltipTextObject.implicitHeight + 2 * root.verticalPadding) : 0
++        implicitWidth: root.width
++        implicitHeight: root.height
+         clip: true
+ 
+-        Behavior on implicitWidth {
+-            animation: Appearance?.animation.elementMoveFast.numberAnimation.createObject(this)
+-        }
+-        Behavior on implicitHeight {
+-            animation: Appearance?.animation.elementMoveFast.numberAnimation.createObject(this)
+-        }
+         Behavior on opacity {
+-            animation: Appearance?.animation.elementMoveFast.numberAnimation.createObject(this)
++            NumberAnimation { duration: 100 }
+         }
+ 
+         StyledText {
+             id: tooltipTextObject
+             anchors.centerIn: parent
++            width: Math.max(0, root.width - 2 * root.horizontalPadding)
+             text: root.text
+-            font.pixelSize: Appearance?.font.pixelSize.smaller ?? 14
++            textFormat: Text.PlainText
++            font.pixelSize: 11
+             font.hintingPreference: Font.PreferNoHinting
+             color: Appearance?.colors.colOnTooltip ?? "#FFFFFF"
+-            wrapMode: Text.Wrap
++            wrapMode: Text.WrapAnywhere
++            maximumLineCount: 2
++            elide: Text.ElideRight
+         }
+     }   
+ }
+diff --git a/modules/overview/Overview.qml b/modules/overview/Overview.qml
+index 2fb08bb..775af23 100644
+--- a/modules/overview/Overview.qml
++++ b/modules/overview/Overview.qml
+@@ -8,6 +8,7 @@ import Quickshell.Hyprland
+ import "../../common"
+ import "../../services"
+ import "."
++import "OverviewKeyboard.js" as Keyboard
+ 
+ Scope {
+     id: overviewScope
+@@ -18,17 +19,87 @@ Scope {
+             id: root
+             required property var modelData
+             readonly property HyprlandMonitor monitor: Hyprland.monitorFor(root.screen)
+-            property bool monitorIsFocused: (Hyprland.focusedMonitor?.id == monitor?.id)
++            property bool monitorIsFocused: monitor?.name === GlobalStates.overviewMonitorName
+             property bool blurEnabled: Config.options.overview.effects.enableBlur
+             property bool backdropEnabled: Config.options.overview.effects.enableBackdrop
+             property real backdropOpacity: Math.max(0, Math.min(1, Config.options.overview.effects.backdropOpacity))
+             property bool closeOnFocusLoss: Config.options.overview.closeOnFocusLoss ?? true
++            property int keyboardWorkspaceId: 1
++            readonly property var keyboardWindows: HyprlandData.windowList.filter(window => window.workspace?.id === root.keyboardWorkspaceId)
++            readonly property var selectedWindow: HyprlandData.windowByAddress[GlobalStates.overviewSelectedAddress] || null
++            property bool keyboardChanging: false
++            function syncKeyboardSelection() {
++                if (GlobalStates.overviewOpen && root.monitorIsFocused && !root.keyboardChanging && !root.selectedWindow)
++                    GlobalStates.overviewSelectedAddress = Keyboard.selection(root.keyboardWindows,
++                        GlobalStates.overviewSelectedAddress, Hyprland.activeToplevel?.lastIpcObject.address);
++            }
++            function navigateWorkspace(target) {
++                if (target === root.keyboardWorkspaceId) return;
++                GlobalStates.overviewSelectedAddress = "";
++                root.keyboardWorkspaceId = target;
++                root.syncKeyboardSelection();
++            }
++            function activateWorkspace(target) {
++                GlobalStates.overviewOpen = false;
++                if (Hyprland.usingLua)
++                    Hyprland.dispatch(`hl.dsp.focus({workspace = '${target}'})`);
++                else
++                    Hyprland.dispatch("workspace " + target);
++            }
++            onKeyboardWindowsChanged: syncKeyboardSelection()
++            function moveWindow(window, destination) {
++                root.runWindowCommand(Keyboard.command("move", window, destination, Hyprland.usingLua), destination, window?.address);
++            }
++            function runWindowCommand(command, destination, address) {
++                if (!command.length || keyboardAction.running) return;
++                keyboardChanging = true;
++                keyboardAction.destination = destination || 0;
++                keyboardAction.selectedAddress = address || GlobalStates.overviewSelectedAddress;
++                keyboardAction.command = command;
++                keyboardAction.running = true;
++            }
++            Process {
++                id: keyboardAction
++                property var destination: 0
++                property string selectedAddress: ""
++                stdout: StdioCollector { id: keyboardOutput }
++                stderr: StdioCollector { id: keyboardErrors }
++                onExited: (exitCode, exitStatus) => {
++                    if (exitCode !== 0 || exitStatus !== 0 || /error|invalid|failed/i.test(keyboardOutput.text + keyboardErrors.text)) {
++                        Quickshell.execDetached(["notify-send", "Tile action failed", keyboardErrors.text || keyboardOutput.text || "Hyprland rejected the action"]);
++                    } else if (destination) {
++                        if (Number.isSafeInteger(destination)) root.keyboardWorkspaceId = destination;
++                        GlobalStates.overviewSelectedAddress = selectedAddress;
++                    }
++                    keyboardRegrab.restart();
++                }
++            }
++            Timer {
++                id: keyboardRegrab
++                interval: 100
++                onTriggered: {
++                    if (GlobalStates.overviewOpen && root.monitorIsFocused) { grab.active = true; keyHandler.forceActiveFocus(); }
++                    root.keyboardChanging = false;
++                }
++            }
+             screen: modelData
+-            visible: GlobalStates.overviewOpen
++            visible: GlobalStates.overviewOpen && root.monitorIsFocused
++            onVisibleChanged: {
++                if (visible) {
++                    root.keyboardWorkspaceId = Math.max(1, root.monitor?.activeWorkspace?.id ?? 1);
++                    GlobalStates.overviewSelectedAddress = "";
++                    root.syncKeyboardSelection();
++                    keyHandler.forceActiveFocus();
++                    delayedGrabTimer.restart();
++                } else {
++                    delayedGrabTimer.stop();
++                    grab.active = false;
++                }
++            }
+ 
+             WlrLayershell.namespace: blurEnabled ? "quickshell:overview-blur" : "quickshell:overview"
+             WlrLayershell.layer: WlrLayer.Overlay
+-            WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
++            WlrLayershell.keyboardFocus: root.monitorIsFocused ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+             color: "transparent"
+ 
+             anchors {
+@@ -45,35 +116,11 @@ Scope {
+                 active: false
+                 onCleared: () => {
+                     // Only the monitor that owns the grab may close the overview
+-                    if (root.closeOnFocusLoss && !active && canBeActive)
++                    if (root.closeOnFocusLoss && !root.keyboardChanging && !active && canBeActive)
+                         GlobalStates.overviewOpen = false;
+                 }
+             }
+ 
+-            Connections {
+-                target: GlobalStates
+-                function onOverviewOpenChanged() {
+-                    if (GlobalStates.overviewOpen) {
+-                        delayedGrabTimer.start();
+-                    }
+-                }
+-            }
+-
+-            // Re-evaluate grab ownership when focused monitor changes
+-            Connections {
+-                target: Hyprland
+-                function onFocusedMonitorChanged() {
+-                    if (!GlobalStates.overviewOpen)
+-                        return;
+-                    // Transfer the grab to the newly focused monitor
+-                    if (root.monitorIsFocused && !grab.active) {
+-                        grab.active = true;
+-                    } else if (!root.monitorIsFocused && grab.active) {
+-                        grab.active = false;
+-                    }
+-                }
+-            }
+-
+             Timer {
+                 id: delayedGrabTimer
+                 interval: Config.options.hacks.arbitraryRaceConditionDelay
+@@ -118,6 +165,38 @@ Scope {
+                 }
+ 
+                 Keys.onPressed: event => {
++                    if (!root.monitorIsFocused) return;
++                    if (root.keyboardChanging && event.key !== Qt.Key_Escape) {
++                        event.accepted = true;
++                        return;
++                    }
++                    if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
++                        GlobalStates.overviewSelectedAddress = Keyboard.cycle(root.keyboardWindows,
++                            GlobalStates.overviewSelectedAddress, event.key === Qt.Key_Backtab || !!(event.modifiers & Qt.ShiftModifier));
++                        event.accepted = true;
++                        return;
++                    }
++                    const direction = ({[Qt.Key_Left]:"left",[Qt.Key_H]:"left",[Qt.Key_Right]:"right",[Qt.Key_L]:"right",
++                        [Qt.Key_Up]:"up",[Qt.Key_K]:"up",[Qt.Key_Down]:"down",[Qt.Key_J]:"down"})[event.key];
++                    if (direction && (event.modifiers & Qt.ControlModifier)) {
++                        root.runWindowCommand(Keyboard.command("swap", root.selectedWindow, direction, Hyprland.usingLua));
++                        event.accepted = true;
++                        return;
++                    }
++                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
++                        const selected = root.selectedWindow;
++                        if (selected?.address) {
++                            GlobalStates.overviewOpen = false;
++                            if (Hyprland.usingLua)
++                                Hyprland.dispatch(`hl.dsp.focus({window = 'address:${selected.address}'})`);
++                            else
++                                Hyprland.dispatch("focuswindow address:" + selected.address);
++                        } else {
++                            root.activateWorkspace(root.keyboardWorkspaceId);
++                        }
++                        event.accepted = true;
++                        return;
++                    }
+                     // close: Escape or Enter
+                     if (event.key === Qt.Key_Escape || event.key === Qt.Key_Return) {
+                         GlobalStates.overviewOpen = false;
+@@ -127,10 +206,11 @@ Scope {
+ 
+                     // Helper: compute current group bounds
+                     const workspacesPerGroup = Config.options.overview.rows * Config.options.overview.columns;
+-                    const currentId = Hyprland.focusedMonitor?.activeWorkspace?.id ?? 1;
++                    const currentId = (event.modifiers & Qt.ShiftModifier) && root.selectedWindow?.workspace?.id > 0
++                        ? root.selectedWindow.workspace.id : root.keyboardWorkspaceId;
+                     const useWorkspaceMap = Config.options.overview.useWorkspaceMap;
+                     const workspaceMap = Config.options.overview.workspaceMap ?? [];
+-                    const focusedMonitorId = Hyprland.focusedMonitor?.id ?? root.monitor?.id ?? 0;
++                    const focusedMonitorId = root.monitor?.id ?? 0;
+                     const workspaceOffset = useWorkspaceMap ? Number(workspaceMap[focusedMonitorId] ?? 0) : 0;
+                     const currentGroup = Math.floor((currentId - workspaceOffset - 1) / workspacesPerGroup);
+                     const minWorkspaceId = currentGroup * workspacesPerGroup + 1 + workspaceOffset;
+@@ -204,11 +284,12 @@ Scope {
+ 
+                     if (targetId !== null) {
+                         const clampedTarget = Math.max(minWorkspaceId, Math.min(maxWorkspaceId, targetId));
+-			if (Hyprland.usingLua) {
+-				Hyprland.dispatch(`hl.dsp.focus({workspace = '${clampedTarget}'})`);
+-			} else {
+-				Hyprland.dispatch("workspace " + clampedTarget);
+-			}
++                        if (event.modifiers & Qt.ShiftModifier) {
++                            root.moveWindow(root.selectedWindow, clampedTarget);
++                            event.accepted = true;
++                            return;
++                        }
++                        root.navigateWorkspace(clampedTarget);
+                         event.accepted = true;
+                     }
+                 }
+diff --git a/modules/overview/OverviewWidget.qml b/modules/overview/OverviewWidget.qml
+index ca82adb..9272c8c 100644
+--- a/modules/overview/OverviewWidget.qml
++++ b/modules/overview/OverviewWidget.qml
+@@ -15,7 +15,7 @@ Item {
+     required property var panelWindow
+     readonly property HyprlandMonitor monitor: Hyprland.monitorFor(panelWindow.screen)
+     readonly property var toplevels: ToplevelManager.toplevels
+-    readonly property int effectiveActiveWorkspaceId: Math.max(1, Math.min(100, monitor?.activeWorkspace?.id ?? 1))
++    readonly property int effectiveActiveWorkspaceId: panelWindow.keyboardWorkspaceId
+     readonly property int workspacesShown: Config.options.overview.rows * Config.options.overview.columns
+     readonly property bool useWorkspaceMap: Config.options.overview.useWorkspaceMap
+     readonly property var workspaceMap: Config.options.overview.workspaceMap
+@@ -200,7 +200,7 @@ Item {
+         if (!Number.isFinite(delta) || delta === 0)
+             return;
+ 
+-        const currentId = monitor?.activeWorkspace?.id ?? effectiveActiveWorkspaceId;
++        const currentId = effectiveActiveWorkspaceId;
+         const minWorkspaceId = workspaceOffset + 1;
+         let maxWorkspaceId = minWorkspaceId + workspacesShown - 1;
+         for (const workspaceId of (workspaceIds ?? [])) {
+@@ -216,11 +216,7 @@ Item {
+         } else if (targetId > maxWorkspaceId) {
+             targetId = minWorkspaceId;
+         }
+-        if (Hyprland.usingLua) {
+-            Hyprland.dispatch(`hl.dsp.focus({workspace = '${targetId}'})`);
+-        } else {
+-            Hyprland.dispatch(`workspace ${targetId}`);
+-        }
++        panelWindow.navigateWorkspace(targetId);
+     }
+ 
+     function isSpecialWorkspace(windowData) {
+@@ -783,7 +779,7 @@ Item {
+                                             recaptureToken: root.previewRecaptureToken
+                                             restrictToWorkspace: false
+                                             animateSize: false
+-                                            z: root.specialWindowZ(windowData)
++                                            z: selected ? 1000000 : root.specialWindowZ(windowData)
+ 
+                                             function moveToDragLayer() {
+                                                 const mapped = specialWindow.mapToItem(specialWindowDragLayer, 0, 0);
+@@ -798,7 +794,7 @@ Item {
+                                             function returnToHomeParent() {
+                                                 specialWindow.suspendPositionAnimation = true;
+                                                 specialWindow.parent = homeParent;
+-                                                specialWindow.z = root.specialWindowZ(windowData);
++                                                specialWindow.z = Qt.binding(() => specialWindow.selected ? 1000000 : root.specialWindowZ(specialWindow.windowData));
+                                                 Qt.callLater(() => specialWindow.suspendPositionAnimation = false);
+                                             }
+ 
+@@ -811,6 +807,7 @@ Item {
+                                                 acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                                                 drag.target: parent
+                                                 onPressed: (mouse) => {
++                                                    GlobalStates.overviewSelectedAddress = specialWindow.windowData.address
+                                                     root.draggingFromWorkspace = -1
+                                                     root.draggingTargetSpecialWorkspace = ""
+                                                     specialWindow.pressed = true
+@@ -833,33 +830,21 @@ Item {
+                                                     if (targetSpecialWorkspace === root.createSpecialWorkspaceTarget) {
+                                                         const createdName = root.nextSpecialWorkspaceName()
+                                                         //INFO: From special TO NEW special
+-                                                        if (Hyprland.usingLua) {
+-                                                            Hyprland.dispatch(`hl.dsp.window.move({workspace = 'special:${createdName}', follow = false, window = 'address:${specialWindow.windowData?.address}'})`);
+-                                                        } else {
+-                                                            Hyprland.dispatch(`movetoworkspacesilent special:${createdName}, address:${specialWindow.windowData?.address}`)
+-                                                        }
++                                                        panelWindow.moveWindow(specialWindow.windowData, "special:" + createdName)
+                                                         specialWindow.returnToHomeParent()
+                                                         specialWindow.x = specialWindow.initX
+                                                         specialWindow.y = specialWindow.initY
+                                                     }
+                                                     else if (targetSpecialWorkspace && targetSpecialWorkspace !== specialWorkspaceTile.specialName) {
+                                                         // Idk
+-                                                        if (Hyprland.usingLua) {
+-                                                            Hyprland.dispatch(`hl.dsp.window.move({workspace = 'special:${targetSpecialWorkspace}', follow = false, window = 'address:${specialWindow.windowData?.address}'})`);
+-                                                        } else {
+-                                                            Hyprland.dispatch(`movetoworkspacesilent special:${targetSpecialWorkspace}, address:${specialWindow.windowData?.address}`)
+-                                                        }
++                                                        panelWindow.moveWindow(specialWindow.windowData, "special:" + targetSpecialWorkspace)
+                                                         specialWindow.returnToHomeParent()
+                                                         specialWindow.x = specialWindow.initX
+                                                         specialWindow.y = specialWindow.initY
+                                                     }
+                                                     else if (targetWorkspace !== -1) {
+                                                         //INFO: From Special TO Normal workspace
+-                                                        if (Hyprland.usingLua) {
+-                                                            Hyprland.dispatch(`hl.dsp.window.move({workspace = '${targetWorkspace}', follow = false, window = 'address:${specialWindow.windowData?.address}'})`);
+-                                                        } else {
+-                                                            Hyprland.dispatch(`movetoworkspacesilent ${targetWorkspace}, address:${specialWindow.windowData?.address}`)
+-                                                        }
++                                                        panelWindow.moveWindow(specialWindow.windowData, targetWorkspace)
+                                                         specialWindow.returnToHomeParent()
+                                                         specialWindow.x = specialWindow.initX
+                                                         specialWindow.y = specialWindow.initY
+@@ -1091,60 +1076,63 @@ Item {
+                         }
+                     }
+ 
+-                    z: atInitPosition ? (root.windowZ + index) : root.windowDraggingZ
++                    z: dragInProgress ? root.windowDraggingZ + 2 : selected ? root.windowDraggingZ : atInitPosition ? (root.windowZ + index) : root.windowDraggingZ
+                     Drag.hotSpot.x: targetWindowWidth / 2
+                     Drag.hotSpot.y: targetWindowHeight / 2
+                     MouseArea {
+                         id: dragArea
+                         anchors.fill: parent
+                         hoverEnabled: true
++                        property bool dragged: false
+                         onEntered: hovered = true
+                         onExited: hovered = false
+                         acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                         drag.target: parent
++                        preventStealing: true
++                        Connections {
++                            target: dragArea.drag
++                            function onActiveChanged() {
++                                if (dragArea.drag.active) {
++                                    dragArea.dragged = true;
++                                    window.dragInProgress = true;
++                                    window.Drag.active = true;
++                                }
++                            }
++                        }
+                         onPressed: (mouse) => {
++                            GlobalStates.overviewSelectedAddress = window.windowData.address
++                            dragged = false
++                            root.draggingTargetWorkspace = -1
+                             root.draggingFromWorkspace = windowData?.workspace.id
+                             root.draggingTargetSpecialWorkspace = ""
+                             window.pressed = true
+-                            window.Drag.active = true
+                             window.Drag.source = window
+                             window.Drag.hotSpot.x = mouse.x
+                             window.Drag.hotSpot.y = mouse.y
+                         }
+                         onReleased: {
+-                            const targetWorkspace = root.draggingTargetWorkspace
+-                            const targetSpecialWorkspace = root.draggingTargetSpecialWorkspace
++                            const targetWorkspace = dragged ? root.draggingTargetWorkspace : -1
++                            const targetSpecialWorkspace = dragged ? root.draggingTargetSpecialWorkspace : ""
+                             window.pressed = false
+                             window.Drag.active = false
++                            window.dragInProgress = false
+                             root.draggingFromWorkspace = -1
+                             root.draggingTargetWorkspace = -1
+                             root.draggingTargetSpecialWorkspace = ""
+                             if (targetSpecialWorkspace === root.createSpecialWorkspaceTarget) {
+                                 const createdName = root.nextSpecialWorkspaceName()
+                                 //INFO: From normal TO special
+-                                if (Hyprland.usingLua) {
+-                                    Hyprland.dispatch(`hl.dsp.window.move({workspace = 'special:${createdName}', follow = false, window = 'address:${window.windowData?.address}'})`);
+-                                } else {
+-                                    Hyprland.dispatch(`movetoworkspacesilent special:${createdName}, address:${window.windowData?.address}`)
+-                                }
++                                panelWindow.moveWindow(window.windowData, "special:" + createdName)
+                                 updateWindowPosition.restart()
+                             }
+                             else if (targetSpecialWorkspace && targetSpecialWorkspace !== root.specialWorkspaceName(windowData)) {
+                                 // Idk
+-                                if (Hyprland.usingLua) {
+-                                    Hyprland.dispatch(`hl.dsp.window.move({workspace = 'special:${targetSpecialWorkspace}', follow = false, window = 'address:${window.windowData?.address}'})`);
+-                                } else {
+-                                    Hyprland.dispatch(`movetoworkspacesilent special:${targetSpecialWorkspace}, address:${window.windowData?.address}`)
+-                                }
++                                panelWindow.moveWindow(window.windowData, "special:" + targetSpecialWorkspace)
+                                 updateWindowPosition.restart()
+                             }
+                             else if (targetWorkspace !== -1 && targetWorkspace !== windowData?.workspace.id) {
+                                 //INFO: From normal TO normal
+-                                if (Hyprland.usingLua) {
+-                                    Hyprland.dispatch(`hl.dsp.window.move({workspace = '${targetWorkspace}', follow = false, window = 'address:${window.windowData?.address}'})`);
+-                                } else {
+-                                    Hyprland.dispatch(`movetoworkspacesilent ${targetWorkspace}, address:${window.windowData?.address}`)
+-                                }
++                                panelWindow.moveWindow(window.windowData, targetWorkspace)
+                                 updateWindowPosition.restart()
+                             }
+                             else {
+@@ -1152,8 +1140,18 @@ Item {
+                                 window.y = window.initY
+                             }
+                         }
++                        onCanceled: {
++                            window.pressed = false
++                            window.Drag.active = false
++                            window.dragInProgress = false
++                            root.draggingFromWorkspace = -1
++                            root.draggingTargetWorkspace = -1
++                            root.draggingTargetSpecialWorkspace = ""
++                            window.x = window.initX
++                            window.y = window.initY
++                        }
+                         onClicked: (event) => {
+-                            if (!windowData) return;
++                            if (dragged || !windowData) return;
+ 
+                             if (event.button === Qt.LeftButton) {
+                                 GlobalStates.overviewOpen = false
+diff --git a/modules/overview/OverviewWindow.qml b/modules/overview/OverviewWindow.qml
+index 3b2652a..2017045 100644
+--- a/modules/overview/OverviewWindow.qml
++++ b/modules/overview/OverviewWindow.qml
+@@ -97,12 +97,13 @@ Item { // Window
+     property bool dragInProgress: false
+     property bool suspendPositionAnimation: false
+     property bool animateSize: true
++    readonly property bool selected: !!windowData?.address && GlobalStates.overviewSelectedAddress === windowData.address
+     
+     x: initX
+     y: initY
+     width: Math.min(targetWindowWidth, availableWorkspaceWidth)
+     height: Math.min(targetWindowHeight, availableWorkspaceHeight)
+-    opacity: (windowData?.monitor ?? -1) == widgetMonitorId ? 1 : Config.options.windowPreview.inactiveMonitorOpacity
++    opacity: selected || (windowData?.monitor ?? -1) == widgetMonitorId ? 1 : Config.options.windowPreview.inactiveMonitorOpacity
+     visible: {
+         const thisWsId = windowData?.workspace?.id;
+         const isFullscreen = (windowData?.fullscreen ?? 0) > 0;
+@@ -177,10 +178,10 @@ Item { // Window
+                 root.glassMode ? ColorUtils.mix(Appearance.colors.colLayer2, Appearance.colors.colLayer0, 0.38) : Appearance.colors.colLayer2,
+                 root.effectiveWindowOverlayOpacity
+             )
+-        border.color: root.glassMode
++        border.color: GlobalStates.overviewSelectedAddress === root.windowData?.address ? "#ffffff" : root.glassMode
+             ? ColorUtils.applyAlpha(Appearance.m3colors.m3outline, 0.62)
+             : ColorUtils.transparentize(Appearance.m3colors.m3outline, 0.7)
+-        border.width: 1
++        border.width: GlobalStates.overviewSelectedAddress === root.windowData?.address ? 3 : 1
+ 
+         Rectangle {
+             visible: root.glassMode
+@@ -226,6 +227,49 @@ Item { // Window
+         }
+     }
+ 
++    Rectangle {
++        id: selectionFrame
++        objectName: "overviewSelectionFrame"
++        anchors.fill: parent
++        anchors.margins: 1
++        visible: root.selected
++        z: 20
++        color: "transparent"
++        border.color: Appearance.colors.colSecondary
++        border.width: 3
++        radius: 4
++        Rectangle {
++            anchors.fill: parent
++            anchors.margins: 3
++            color: "transparent"
++            border.width: 2
++            border.color: "#101817"
++            radius: 2
++        }
++        Rectangle {
++            anchors.left: parent.left
++            anchors.right: parent.right
++            anchors.bottom: parent.bottom
++            anchors.margins: 3
++            height: 24
++            visible: root.width >= 80 && root.height >= 40
++            color: Appearance.colors.colSecondary
++            Text {
++                objectName: "overviewSelectedTitle"
++                anchors.fill: parent
++                anchors.leftMargin: 6
++                anchors.rightMargin: 6
++                text: "Selected: " + (root.windowData?.title || root.windowData?.class || "Window")
++                textFormat: Text.PlainText
++                color: Appearance.m3colors.m3onSecondary
++                font.pixelSize: 12
++                font.bold: true
++                elide: Text.ElideRight
++                verticalAlignment: Text.AlignVCenter
++            }
++        }
++    }
++
+     Item {
+         id: previewMask
+         width: windowPreview.width
+diff --git a/services/GlobalStates.qml b/services/GlobalStates.qml
+index 7644e38..76d5aad 100644
+--- a/services/GlobalStates.qml
++++ b/services/GlobalStates.qml
+@@ -3,9 +3,16 @@ pragma ComponentBehavior: Bound
+ 
+ import QtQuick
+ import Quickshell
++import Quickshell.Hyprland
+ 
+ Singleton {
+     id: root
+     property bool overviewOpen: false
++    property string overviewMonitorName: ""
++    onOverviewOpenChanged: {
++        if (overviewOpen)
++            overviewMonitorName = Hyprland.focusedMonitor?.name || Quickshell.screens[0]?.name || "";
++    }
++    property string overviewSelectedAddress: ""
+     property bool superReleaseMightTrigger: true
+ }
+diff --git a/modules/overview/OverviewKeyboard.js b/modules/overview/OverviewKeyboard.js
+new file mode 100644
+index 0000000..a6f859e
+--- /dev/null
++++ b/modules/overview/OverviewKeyboard.js
+@@ -0,0 +1,31 @@
++function selection(windows, selected, active) {
++    const available = windows.filter(window => /^0x[0-9a-f]+$/i.test(window?.address || ""));
++    if (available.some(window => window.address === selected)) return selected;
++    if (available.some(window => window.address === active)) return active;
++    return available[0]?.address || "";
++}
++
++function cycle(windows, selected, backwards) {
++    windows = windows.filter(window => /^0x[0-9a-f]+$/i.test(window?.address || ""));
++    if (!windows.length) return "";
++    const index = windows.findIndex(window => window.address === selected);
++    const next = index < 0 ? (backwards ? windows.length - 1 : 0) : (index + (backwards ? -1 : 1) + windows.length) % windows.length;
++    return windows[next].address;
++}
++
++function command(operation, window, target, usingLua) {
++    if (!window || !/^0x[0-9a-f]+$/i.test(window.address || "")) return [];
++    const address = "address:" + window.address;
++    if (operation === "move" && ((Number.isSafeInteger(target) && target > 0) ||
++        (typeof target === "string" && /^special:[a-z0-9_. -]+$/i.test(target)))) {
++        return usingLua
++            ? ["hyprctl", "repl", 'hl.dispatch(hl.dsp.window.move({workspace="' + target + '",follow=true,window="' + address + '"}));hl.dispatch(hl.dsp.focus({window="' + address + '"}))']
++            : ["hyprctl", "--batch", "dispatch movetoworkspace " + target + "," + address + ";dispatch focuswindow " + address];
++    }
++    if (operation === "swap" && ["left", "right", "up", "down"].includes(target) && !window.floating) {
++        return usingLua
++            ? ["hyprctl", "repl", 'hl.dispatch(hl.dsp.window.swap({direction="' + target + '",window="' + address + '"}))']
++            : ["hyprctl", "--batch", "dispatch focuswindow " + address + ";dispatch swapwindow " + target[0]];
++    }
++    return [];
++}
+\ No newline at end of file

@@ -264,4 +264,14 @@ QUICKSHELL_ENABLE_HOST_CAPTURE=1 quickshell -p preview/shell.qml
 
 Clicking the scissors button then runs `quickshell -c hyprquickshot -n`. HyprQuickshot owns selection, editing, saving and clipboard operations. Its `HQS_DIR` environment variable selects the screenshot directory. Without the opt-in or a Hyprland session, no process is launched. PySide6 preview always remains inert, even with that environment variable set. No Print Screen bindings or compositor settings are modified. Real capture and dependency-failure handling still require target validation.
 
+The local screenshot fixes target upstream revision `3b4a039087c34f75f3ba10499b64f22f456c3731`. From this repository root, apply them to a clean installation at that revision:
+
+```sh
+git -C "$HOME/.config/quickshell/hyprquickshot" apply --check "$PWD/tools/hyprquickshot.patch"
+git -C "$HOME/.config/quickshell/hyprquickshot" apply "$PWD/tools/hyprquickshot.patch"
+ln -s "$PWD/tools/capture_screenshot.py" "$HOME/.config/quickshell/hyprquickshot/capture_screenshot.py"
+```
+
+The patched configuration also requires Python 3. It preserves upstream's compact toolbar, selection animations, and capture-and-exit workflow. It opens on all connected monitors: drag a region across display boundaries, select a visible window on either display, or use the screen button to capture the entire desktop. Mixed-scale monitors share logical selection coordinates; output uses the highest display scale. Hover over Save to disk for the destination; one completion notification reports the filename and clipboard result. There is no separate result manager. Saving and clipboard copying are independent. The destination is `HQS_DIR`, `XDG_SCREENSHOTS_DIR`, `XDG_PICTURES_DIR`, or `$HOME/Pictures`, in that order. With Save to disk disabled, only the PNG clipboard is updated. The installed configuration uses a software-rendered selection fallback for local graphics-context failures. `HQS_VALIDATE_ONLY=1 quickshell -c hyprquickshot -n` validates native loading and reports combined display geometry without taking a screenshot.
+
 See [preview architecture](docs/preview-workflow.md), [local AI spec and plan](docs/local-ai.md) and [asset provenance](docs/assets.md). The comprehensive component plan remains in the existing untitled planning document. Project-wide licensing is still undecided.

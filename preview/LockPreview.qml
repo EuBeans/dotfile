@@ -7,11 +7,13 @@ FocusScope {
     id: lock
     objectName: "lockPreview"
     required property var service
+    property var authenticator: null
+    readonly property bool secured: authenticator !== null
     property bool rejectAttempt: false
     property bool capsLock: false
     property string status: ""
     property real reveal: 1
-    readonly property bool busy: authentication.running || completion.running
+    readonly property bool busy: secured ? authenticator.busy : authentication.running || completion.running
     signal dismissed()
     clip: true
 
@@ -24,6 +26,11 @@ FocusScope {
     }
     function submit() {
         if (busy || !password.text.length) return;
+        if (secured) {
+            authenticator.submit(password.text);
+            password.clear();
+            return;
+        }
         password.clear();
         status = "Checking...";
         authentication.start();
@@ -38,7 +45,15 @@ FocusScope {
         }
     }
     NumberAnimation { id: entrance; target: lock; property: "reveal"; from: 0; to: 1; duration: Ui.Theme.animationDuration; easing.type: Easing.OutCubic }
-    Keys.onEscapePressed: lock.dismissed()
+    onAuthenticatorChanged: reset()
+    onBusyChanged: {
+        if (busy && secured) password.clear();
+        else if (!busy && visible) password.forceActiveFocus();
+    }
+    Keys.onEscapePressed: {
+        password.clear();
+        if (!secured) lock.dismissed();
+    }
     Keys.onPressed: event => {
         if (event.key === Qt.Key_CapsLock) capsLock = !capsLock;
     }
@@ -46,12 +61,13 @@ FocusScope {
         id: authentication
         interval: 650
         onTriggered: {
+            if (lock.secured) return;
             lock.status = lock.rejectAttempt ? "Not recognized. Try again." : "Unlocked";
             if (lock.rejectAttempt) password.forceActiveFocus();
             else completion.start();
         }
     }
-    Timer { id: completion; interval: 350; onTriggered: lock.dismissed() }
+    Timer { id: completion; interval: 350; onTriggered: if (!lock.secured) lock.dismissed() }
 
     Image {
         objectName: "lockWallpaper"
@@ -63,6 +79,7 @@ FocusScope {
     MouseArea { anchors.fill: parent; onClicked: password.forceActiveFocus() }
 
     RowLayout {
+        visible: !lock.secured
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
@@ -75,7 +92,7 @@ FocusScope {
         id: lockScroll
         objectName: "lockScroll"
         anchors.fill: parent
-        anchors.topMargin: 72
+        anchors.topMargin: lock.secured ? 24 : 72
         clip: true
         contentWidth: width
         contentHeight: Math.max(height, clockBlock.height + widgets.height + login.height + 128)
@@ -114,7 +131,7 @@ FocusScope {
         }
         Rectangle { Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 12; implicitWidth: 32; implicitHeight: 1; color: Ui.Theme.line }
         Ui.Label {
-            text: "Volume " + lock.service.volume + "%"
+            text: lock.service.volume >= 0 ? "Volume " + lock.service.volume + "%" : "Volume unavailable"
             Layout.fillWidth: true
             horizontalAlignment: Text.AlignHCenter
             font.pixelSize: 11
@@ -162,15 +179,15 @@ FocusScope {
             Ui.ActionButton {
                 objectName: "lockPlayback"
                 iconName: lock.service.playing ? "pause" : "play"
-                description: lock.service.playing ? "Pause preview music" : "Play preview music"
-                onClicked: lock.service.playing = !lock.service.playing
+                description: lock.service.playing ? "Pause music" : "Play music"
+                onClicked: lock.secured ? lock.service.playbackRequested() : lock.service.playing = !lock.service.playing
             }
         }
         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Ui.Theme.line }
         RowLayout {
             Layout.fillWidth: true
-            Ui.Label { text: "Preview user"; font.pixelSize: 13; Layout.fillWidth: true }
-            Ui.Label { text: lock.capsLock ? "CAPS LOCK" : "US"; color: Ui.Theme.muted; font.pixelSize: 10 }
+            Ui.Label { text: lock.secured ? lock.service.userName : "Preview user"; textFormat: Text.PlainText; font.pixelSize: 13; Layout.fillWidth: true }
+            Ui.Label { text: lock.capsLock ? "CAPS LOCK" : lock.secured ? lock.service.keyboardLayout : "US"; color: Ui.Theme.muted; font.pixelSize: 10 }
         }
         RowLayout {
             Layout.fillWidth: true
@@ -181,7 +198,7 @@ FocusScope {
                 Layout.fillWidth: true
                 Layout.minimumWidth: 0
                 Layout.preferredHeight: 44
-                placeholderText: "Demo password"
+                placeholderText: lock.secured ? "Password" : "Demo password"
                 echoMode: TextInput.Password
                 maximumLength: 128
                 enabled: !lock.busy
@@ -192,7 +209,7 @@ FocusScope {
                 font.family: Ui.Theme.textFont
                 font.pixelSize: 13
                 leftPadding: 14
-                Accessible.name: "Demo password, not system authentication"
+                Accessible.name: lock.secured ? "Unlock password" : "Demo password, not system authentication"
                 onAccepted: lock.submit()
                 onActiveFocusChanged: {
                     if (activeFocus && lock.visible)
@@ -204,7 +221,7 @@ FocusScope {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
                 iconName: "chevron-right"
-                description: "Simulate unlock"
+                description: lock.secured ? "Unlock session" : "Simulate unlock"
                 enabled: password.text.length > 0 && !lock.busy
                 onClicked: lock.submit()
             }
@@ -213,7 +230,8 @@ FocusScope {
             objectName: "lockStatus"
             Layout.fillWidth: true
             Layout.preferredHeight: 32
-            text: lock.status
+            text: lock.secured ? lock.authenticator.status : lock.status
+            textFormat: Text.PlainText
             color: Ui.Theme.muted
             font.pixelSize: 11
             wrapMode: Text.WordWrap

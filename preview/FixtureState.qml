@@ -76,8 +76,20 @@ QtObject {
         return index >= 0 ? index : profileSettings.currentProfile.wallpaper;
     }
     readonly property var selectedWallpaper: wallpapers[wallpaper] || bundledWallpapers[profileSettings.currentProfile.wallpaper]
-    function setWallpaper(index) {
+    property var wallpaperMonitors: []
+    function wallpaperSourceForMonitor(monitor) {
+        return profileSettings.wallpaperForMonitor(monitor, String(selectedWallpaper.source));
+    }
+    function wallpaperIndexForMonitor(monitor) {
+        const source = wallpaperSourceForMonitor(monitor);
+        return wallpapers.findIndex(entry => String(entry.source) === source);
+    }
+    function setWallpaper(index, monitor) {
         if (!Number.isInteger(index) || index < 0 || index >= wallpapers.length) return;
+        if (monitor) {
+            if (wallpaperMonitors.includes(monitor)) profileSettings.selectMonitorWallpaper(monitor, String(wallpapers[index].source));
+            return;
+        }
         const legacyWallpaper = index < 3;
         profileSettings.selectWallpaper(legacyWallpaper ? index : profileSettings.currentProfile.wallpaper,
                         legacyWallpaper ? "" : String(wallpapers[index].source));

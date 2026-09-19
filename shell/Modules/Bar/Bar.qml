@@ -10,7 +10,13 @@ Item {
     property string openPanel: ""
     property int selectedGpu: 0
     property bool settingsOpen: false
+    property bool showNetworkButton: false
     readonly property var activities: state.activities
+    readonly property bool liveTelemetry: state.desktopData.live
+    readonly property var cpuMetric: state.desktopData.metrics.find(entry => entry.key === "cpu") || null
+    readonly property string cpuReading: liveTelemetry
+        ? (state.desktopData.fresh && cpuMetric && Number.isFinite(cpuMetric.value) ? Math.round(cpuMetric.value) + "%" : "N/A")
+        : (state.telemetryAvailable ? "8%" : "N/A")
     readonly property var notification: state.currentNotification
     readonly property bool notificationRow: !!notification && (stacked || notchSpace < 160)
     readonly property bool stacked: width < 640
@@ -30,10 +36,12 @@ Item {
     signal profileRequested(string name)
     signal wallpaperRequested()
     signal volumeRequested()
+    signal outputVolumeRequested(int value)
     signal aiRequested()
     signal gpuRequested(int index)
     signal powerRequested()
     signal controlsRequested()
+    signal networkRequested()
     signal settingsRequested()
     signal calendarRequested()
     signal summaryRequested()
@@ -65,6 +73,15 @@ Item {
                 checked: bar.openPanel === "controls"
                 description: "Open Home"
                 onClicked: bar.controlsRequested()
+            }
+            Ui.ActionButton {
+                objectName: "barNetwork"
+                visible: bar.showNetworkButton
+                iconName: "wifi"
+                iconOnly: true
+                description: "Network / Wi-Fi " + (bar.state.wifiEnabled ? "on" : "off")
+                checked: bar.openPanel === "network"
+                onClicked: bar.networkRequested()
             }
             Ui.ActionButton {
                 id: clockControl
@@ -119,13 +136,14 @@ Item {
         readonly property bool navigationVisible: !bar.notification && !displayedNotification && bar.activities.entries.length > 1
         readonly property real contentWidth: Math.max(0, width - 48 - (!displayedNotification && bar.activities.entries.length > 1 ? 68 : 0))
         property real pageProgress: 1
+        readonly property real pageRevealProgress: Ui.Theme.animatedProgress(pageProgress)
         property int slideDirection: 1
         readonly property real pageOpacity: 1
-        readonly property real pageOffset: slideDirection * (pageProgress - 1) * (width - 28)
+        readonly property real pageOffset: slideDirection * (pageRevealProgress - 1) * (width - 28)
         readonly property bool pageAnimating: pageMotion.running
         readonly property bool instant: bar.state.reducedMotion || Ui.Theme.animationStyle === "Off" || Ui.Theme.animationDuration === 0
         property real progress: 0
-        readonly property real revealProgress: Ui.Theme.animationStyle === "Stepped" ? Math.floor(progress * 12) / 12 : progress
+        readonly property real revealProgress: Ui.Theme.animatedProgress(progress)
         readonly property bool animating: motion.running
         function syncPage() {
             displayedKey = requestedKey;
@@ -171,15 +189,15 @@ Item {
             property: "pageProgress"
             to: 1
             duration: Ui.Theme.animationDuration
-            easing.type: Easing.InOutCubic
+            easing.type: Ui.Theme.animationStyle === "Stepped" ? Easing.Linear : Easing.InOutCubic
             onFinished: {
                 notch.outgoingPage = null;
                 if (notch.requestedKey !== notch.displayedKey) notch.changePage();
             }
         }
-        NumberAnimation { id: motion; target: notch; property: "progress"; duration: Ui.Theme.animationDuration; easing.type: Easing.OutCubic }
+        NumberAnimation { id: motion; target: notch; property: "progress"; duration: Ui.Theme.animationDuration; easing.type: Ui.Theme.animationStyle === "Stepped" ? Easing.Linear : Easing.OutCubic }
         anchors.horizontalCenter: parent.horizontalCenter
-        width: bar.notificationRow ? Math.min(560, bar.width - 24) : !bar.stacked && bar.notchSpace >= 160 ? Math.min(560, bar.notchSpace) : 0
+        width: bar.notificationRow ? Math.min(374, bar.width - 24) : !bar.stacked && bar.notchSpace >= 160 ? Math.min(374, bar.notchSpace) : 0
         height: Ui.Theme.barHeight - (floating ? 8 : 0)
         y: (bar.notificationRow ? Ui.Theme.barHeight * (bar.stacked ? 2 : 1) : 0) + (floating ? 4 : 0) - (1 - revealProgress) * (height + (floating ? 4 : 0))
         visible: progress > 0 && width > 0
@@ -204,7 +222,7 @@ Item {
             readonly property string namePrefix: outgoing ? "outgoing-" : ""
             objectName: namePrefix + "notchPageContent"
             visible: !outgoing || !!snapshot
-            x: -14 + (outgoing ? notch.slideDirection * notch.pageProgress * (notch.width - 28) : notch.pageOffset)
+            x: -14 + (outgoing ? notch.slideDirection * notch.pageRevealProgress * (notch.width - 28) : notch.pageOffset)
             width: notch.width
             height: parent.height
             opacity: notch.pageOpacity
@@ -309,8 +327,6 @@ Item {
                     width: 5; height: seek.activeFocus || seek.hovered || seek.pressed ? 12 : 3
                     color: Ui.Theme.paper
                 }
-                ToolTip.visible: hovered
-                ToolTip.text: Math.floor(value / 60) + ":" + String(Math.floor(value % 60)).padStart(2, "0")
             }
             Ui.ActionButton { objectName: pageContent.namePrefix + "previousButton"; visible: bar.state.mediaAvailable && notch.width >= 300; implicitWidth: 28; iconName: "skip-back"; description: "Previous track"; enabled: bar.state.mediaAvailable; onClicked: bar.previousRequested() }
             Ui.ActionButton {
@@ -337,8 +353,6 @@ Item {
                     hoverEnabled: true
                     acceptedButtons: Qt.NoButton
                 }
-                ToolTip.visible: trackHover.containsMouse
-                ToolTip.text: trackTitle.text
             }
             Ui.Label {
                 objectName: pageContent.namePrefix + "barTrackTime"
@@ -450,13 +464,14 @@ Item {
             spacing: bar.dense ? 2 : 4
             Ui.ActionButton {
                 objectName: "barCpu"
+                visible: !volumeControl.expanded || bar.width >= 960
                 iconName: "cpu"
                 iconOnly: false
                 padding: bar.dense ? 4 : 8
                 font.pixelSize: bar.dense ? 10 : 11
                 Layout.preferredWidth: bar.hardwareLabels ? 96 : bar.dense ? 54 : 68
-                text: (bar.hardwareLabels ? "CPU " : "") + (bar.state.telemetryAvailable ? "8%" : "N/A")
-                description: "CPU / AMD Ryzen 9 9950X3D / " + (bar.state.telemetryAvailable ? "8% / Preview telemetry" : "Telemetry unavailable")
+                text: (bar.hardwareLabels ? "CPU " : "") + bar.cpuReading
+                description: bar.liveTelemetry ? "CPU / " + (bar.state.desktopData.devices.cpu || "Unknown processor") + " / " + bar.cpuReading : "CPU / AMD Ryzen 9 9950X3D / " + (bar.state.telemetryAvailable ? "8% / Preview telemetry" : "Telemetry unavailable")
                 onClicked: bar.summaryRequested()
             }
             Repeater {
@@ -464,15 +479,17 @@ Item {
                 Ui.ActionButton {
                     required property int index
                     readonly property var gpu: bar.state.gpus[index]
+                    readonly property string memoryReading: bar.state.telemetryAvailable && Number.isFinite(gpu.usedGiB) && Number.isFinite(gpu.totalGiB) ? gpu.usedGiB.toFixed(1) + "/" + gpu.totalGiB.toFixed(1) + " GiB" : "N/A"
                     objectName: "barGpu" + index
+                    visible: !volumeControl.expanded || bar.width >= 960
                     iconName: "circuit-board"
                     iconOnly: false
                     padding: bar.dense ? 4 : 8
                     font.pixelSize: bar.dense ? 10 : 11
                     Layout.preferredWidth: bar.width >= 3000 ? 260 : bar.hardwareLabels ? 144 : bar.dense ? 54 : 68
-                    text: (bar.hardwareLabels ? gpu.name.replace("RTX ", "") + " " : "") + (bar.state.telemetryAvailable ? gpu.utilization + "%" + (bar.width >= 3000 ? "  " + gpu.usedGiB.toFixed(1) + "/" + gpu.totalGiB + " GiB" : "") : "N/A")
+                    text: (bar.hardwareLabels ? gpu.name.replace(/^(?:NVIDIA\s+)?GeForce\s+|^NVIDIA\s+/i, "") + " " : "") + (bar.state.telemetryAvailable && Number.isFinite(gpu.utilization) ? gpu.utilization + "%" + (bar.width >= 3000 ? "  " + memoryReading : "") : "N/A")
                     checked: bar.openPanel === "gpu" && bar.selectedGpu === index
-                    description: gpu.name + " / " + (bar.state.telemetryAvailable ? gpu.usedGiB.toFixed(1) + " / " + gpu.totalGiB + " GiB VRAM" : "Telemetry unavailable")
+                    description: gpu.name + " / " + memoryReading + " VRAM"
                     onClicked: bar.gpuRequested(index)
                 }
             }
@@ -496,16 +513,83 @@ Item {
                 font.pixelSize: 11
             }
             Rectangle { visible: bar.hardwareLabels; Layout.preferredWidth: 1; Layout.preferredHeight: 16; color: Ui.Theme.line }
-            Ui.ActionButton {
-                objectName: "volumeButton"
-                iconName: bar.state.outputMuted ? "volume-x" : "volume-2"
-                iconOnly: !bar.hardwareLabels
-                checked: bar.openPanel === "volume"
-                padding: bar.dense ? 4 : 8
-                Layout.preferredWidth: bar.hardwareLabels ? 100 : bar.dense ? 24 : 36
-                text: bar.state.outputMuted ? "Muted" : bar.state.volume + "%"
-                description: "Audio mixer / " + (bar.state.outputMuted ? "Output muted" : "Volume " + bar.state.volume + "%")
-                onClicked: bar.volumeRequested()
+            Item {
+                id: volumeControl
+                objectName: "barVolumeControl"
+                readonly property real buttonWidth: bar.dense ? 24 : 36
+                readonly property real sliderWidth: bar.width >= 960 ? 128 : 88
+                readonly property bool instant: bar.state.reducedMotion || Ui.Theme.animationStyle === "Off" || Ui.Theme.animationDuration === 0
+                property real progress: 0
+                readonly property real revealProgress: Ui.Theme.animatedProgress(progress)
+                property bool hoverExpanded: false
+                readonly property bool expanded: hoverExpanded || inlineVolume.pressed
+                    || (inlineVolume.activeFocus && inlineVolume.focusReason !== Qt.MouseFocusReason)
+                    || (volumeButton.activeFocus && volumeButton.focusReason !== Qt.MouseFocusReason)
+                implicitWidth: buttonWidth + (bar.hardwareLabels ? 64 : 0) + (sliderWidth + (bar.hardwareLabels ? 0 : 56)) * revealProgress
+                implicitHeight: 34
+                Layout.preferredWidth: implicitWidth
+                onExpandedChanged: {
+                    volumeMotion.stop();
+                    if (instant) progress = expanded ? 1 : 0;
+                    else { volumeMotion.to = expanded ? 1 : 0; volumeMotion.start(); }
+                }
+                onInstantChanged: if (instant) { volumeMotion.stop(); progress = expanded ? 1 : 0; }
+                NumberAnimation {
+                    id: volumeMotion
+                    target: volumeControl
+                    property: "progress"
+                    duration: Ui.Theme.animationDuration
+                    easing.type: Ui.Theme.animationStyle === "Stepped" ? Easing.Linear : Easing.OutCubic
+                }
+                HoverHandler {
+                    id: volumeHover
+                    onHoveredChanged: {
+                        if (hovered) hoverDelay.restart();
+                        else { hoverDelay.stop(); volumeControl.hoverExpanded = false; }
+                    }
+                }
+                Timer { id: hoverDelay; interval: 50; onTriggered: volumeControl.hoverExpanded = volumeHover.hovered }
+                Ui.ValueSlider {
+                    id: inlineVolume
+                    objectName: "barVolumeSlider"
+                    x: volumeControl.buttonWidth + 4
+                    width: Math.max(0, volumeControl.sliderWidth * volumeControl.revealProgress - 8)
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: volumeControl.revealProgress > 0
+                    enabled: !bar.liveTelemetry || (bar.state.desktopData.controlsEnabled && !!bar.state.defaultSink)
+                    from: 0
+                    to: 100
+                    stepSize: 1
+                    value: bar.state.volume
+                    Accessible.name: "Output volume"
+                    onMoved: if (!pressed) bar.outputVolumeRequested(Math.round(value))
+                    onPressedChanged: if (!pressed && enabled) bar.outputVolumeRequested(Math.round(value))
+                }
+                Ui.ActionButton {
+                    id: volumeButton
+                    objectName: "volumeButton"
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: volumeControl.buttonWidth
+                    iconName: bar.state.outputMuted ? "volume-x" : "volume-2"
+                    iconOnly: true
+                    checked: bar.openPanel === "volume"
+                    padding: bar.dense ? 4 : 8
+                    text: bar.state.outputMuted ? "Muted" : bar.state.volume + "%"
+                    description: "Audio mixer / " + (bar.state.outputMuted ? "Output muted" : "Volume " + bar.state.volume + "%")
+                    onClicked: bar.volumeRequested()
+                }
+                Ui.Label {
+                    objectName: "barVolumeValue"
+                    x: volumeControl.buttonWidth + volumeControl.sliderWidth * volumeControl.revealProgress
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: bar.hardwareLabels ? 64 : 56 * volumeControl.revealProgress
+                    visible: width > 0
+                    clip: true
+                    text: volumeButton.text
+                    horizontalAlignment: Text.AlignHCenter
+                    font.pixelSize: 12
+                }
             }
             Ui.ActionButton {
                 objectName: "recordingIndicator"

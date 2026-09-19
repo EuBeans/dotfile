@@ -6,6 +6,7 @@ import "../../Components" as Ui
 Rectangle {
     id: settings
     property bool embedded: false
+    property bool production: false
     property bool singleSection: false
     required property var service
     required property var shortcuts
@@ -207,7 +208,7 @@ Rectangle {
                             model: settings.service.profileSettings.profiles.map(entry => entry.name)
                             currentIndex: model.indexOf(settings.service.profile)
                             Accessible.name: "Profile"
-                            onActivated: profilePolicies.confirmSwitch(currentText)
+                            onActivated: settings.production ? settings.service.applyProfile(currentText) : profilePolicies.item.confirmSwitch(currentText)
                         }
                         Ui.Label { text: "Profile name"; color: Ui.Theme.muted; font.pixelSize: 11 }
                         RowLayout {
@@ -253,6 +254,7 @@ Rectangle {
                                 Ui.ActionButton {
                                     required property string modelData
                                     objectName: "source" + modelData
+                                    enabled: !settings.production || modelData === "Saved" || settings.service.wallpaperColorsAvailable
                                     text: modelData
                                     checked: settings.service.profileSettings.currentProfile.source === modelData
                                     onClicked: settings.service.profileSettings.update("source", modelData)
@@ -339,7 +341,7 @@ Rectangle {
                             Ui.SettingRow {
                                 required property var modelData
                                 Layout.fillWidth: true
-                                enabled: modelData.unit !== "%" || settings.service.profileSettings.glassEnabled
+                                enabled: (!settings.production || modelData.key !== "windowOpacity" || settings.service.desktopControlsEnabled) && (modelData.unit !== "%" || settings.service.profileSettings.glassEnabled)
                                 label: modelData.label
                                 Ui.ValueControl {
                                     objectName: modelData.key + "Setting"
@@ -384,6 +386,7 @@ Rectangle {
                                     objectName: modelData.key + "Setting"
                                     from: 0
                                     to: 24
+                                    enabled: !settings.production || modelData.key !== "windowRadius" || settings.service.desktopControlsEnabled
                                     value: settings.service.profileSettings[modelData.key]
                                     Accessible.name: modelData.label + " corner radius"
                                     onValueModified: value => settings.service.profileSettings.setAppearance(modelData.key, value)
@@ -449,6 +452,7 @@ Rectangle {
                     }
                     Ui.SettingsSection {
                         objectName: "windowLayoutSection"
+                        enabled: !settings.production || settings.service.desktopControlsEnabled
                         title: "Window layout"
                         visible: settings.section === 2
                         Ui.SettingRow {
@@ -457,15 +461,16 @@ Rectangle {
                             Ui.Dropdown {
                                 objectName: "settingsTilingLayout"
                                 Layout.maximumWidth: 180
-                                model: ["Auto", "Split", "Columns", "Centered"]
-                                currentIndex: model.indexOf(settings.service.profileSettings.tilingLayout)
+                                readonly property var layoutKeys: ["Auto", "Split", "Columns", "Centered"]
+                                model: settings.production ? ["Current / default", "Dwindle", "Master", "Centered"] : layoutKeys
+                                currentIndex: layoutKeys.indexOf(settings.service.profileSettings.tilingLayout)
                                 Accessible.name: "Tiling mode"
-                                onActivated: settings.service.profileSettings.setAppearance("tilingLayout", currentText)
+                                onActivated: settings.service.profileSettings.setAppearance("tilingLayout", layoutKeys[currentIndex])
                             }
                         }
                         Ui.SettingRow {
                             Layout.fillWidth: true
-                            enabled: settings.service.profileSettings.tilingLayout !== "Columns"
+                            enabled: settings.production ? ["Columns", "Centered"].includes(settings.service.profileSettings.tilingLayout) : settings.service.profileSettings.tilingLayout !== "Columns"
                             label: "Main pane width"
                             Ui.ValueControl {
                                 objectName: "mainPaneRatioSetting"
@@ -493,6 +498,7 @@ Rectangle {
                     }
                     Ui.SettingsSection {
                         objectName: "tilingSection"
+                        enabled: !settings.production || settings.service.desktopControlsEnabled
                         title: "Window gaps"
                         visible: settings.section === 2
                         Repeater {
@@ -578,6 +584,7 @@ Rectangle {
                     }
                     Ui.SettingsSection {
                         objectName: "bindingsSection"
+                        enabled: !settings.production || (settings.service.desktopControlsEnabled && settings.shortcuts.ready && !settings.shortcuts.busy)
                         title: "Key bindings"
                         visible: settings.section === 4
                         Repeater {
@@ -634,6 +641,7 @@ Rectangle {
                     }
                     Ui.SettingsSection {
                         objectName: "audioOutputSection"
+                        enabled: !settings.production || (settings.service.desktopData.controlsEnabled && settings.service.defaultSink !== null && !settings.service.desktopData.busy)
                         title: "Output"
                         visible: settings.section === 5
                         RowLayout {
@@ -654,26 +662,34 @@ Rectangle {
                             stepSize: 1
                             value: settings.service.volume
                             Accessible.name: "Output volume"
-                            onMoved: settings.service.volume = Math.round(value)
+                            onMoved: {
+                                if (settings.production) settings.service.volumeRequested(Math.round(value));
+                                else settings.service.volume = Math.round(value);
+                            }
                         }
                         Ui.Toggle {
                             objectName: "settingsOutputMute"
                             text: "Mute output"
                             checked: settings.service.outputMuted
-                            onToggled: settings.service.outputMuted = checked
+                            onToggled: {
+                                if (settings.production) settings.service.outputMuteRequested(checked);
+                                else settings.service.outputMuted = checked;
+                            }
                         }
                     }
-                    ProfilePolicies {
+                    Loader {
                         id: profilePolicies
-                        service: settings.service
-                        visible: settings.section === 1
+                        Layout.fillWidth: true
+                        active: !settings.production
+                        visible: !settings.production && settings.section === 1
+                        sourceComponent: ProfilePolicies { service: settings.service }
                     }
                     Ui.SettingsSection {
                         objectName: "audioDevicesSection"
                         title: "Devices"
                         visible: settings.section === 5
                         Ui.Label {
-                            text: "PipeWire: not connected"
+                            text: settings.production ? (settings.service.defaultSink ? settings.service.defaultSink.description || settings.service.defaultSink.name : "No output device") : "PipeWire: not connected"
                             color: Ui.Theme.muted
                             Layout.fillWidth: true
                         }
@@ -694,7 +710,7 @@ Rectangle {
                         title: "Notification service"
                         visible: settings.section === 6
                         Ui.Label {
-                            text: "Desktop service: not connected"
+                            text: settings.production ? (settings.service.preferences.notificationsEnabled ? "Desktop notification server enabled" : "Desktop notification server disabled") : "Desktop service: not connected"
                             color: Ui.Theme.muted
                             Layout.fillWidth: true
                         }
@@ -704,7 +720,7 @@ Rectangle {
                         title: "Runtime"
                         visible: settings.section === 7
                         Ui.Label {
-                            text: "Backend: preview"
+                            text: settings.production ? "Backend: setup deferred" : "Backend: preview"
                             color: Ui.Theme.muted
                         }
                         Ui.Label {
@@ -733,16 +749,16 @@ Rectangle {
                         title: "Session"
                         visible: settings.section === 8
                         Ui.Label {
-                            text: "Runtime: native Qt preview"
+                            text: settings.production ? "Runtime: Quickshell" : "Runtime: native Qt preview"
                             Layout.fillWidth: true
                         }
                         Ui.Label {
-                            text: "Hyprland: not connected"
+                            text: settings.production ? "Hyprland: connected" : "Hyprland: not connected"
                             color: Ui.Theme.muted
                             Layout.fillWidth: true
                         }
                         Ui.Label {
-                            text: "GPU telemetry: simulated"
+                            text: settings.production ? (settings.service.telemetryAvailable ? "GPU telemetry: live" : "GPU telemetry: unavailable") : "GPU telemetry: simulated"
                             color: Ui.Theme.muted
                             Layout.fillWidth: true
                         }
@@ -758,7 +774,7 @@ Rectangle {
                             elide: Text.ElideNone
                         }
                         Ui.Label {
-                            text: "Audio, motion override and DND: session only"
+                            text: settings.production ? "Motion override and DND: saved locally" : "Audio, motion override and DND: session only"
                             color: Ui.Theme.muted
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
